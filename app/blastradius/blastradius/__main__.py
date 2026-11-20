@@ -3,16 +3,27 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 
 from . import core, gitio
 
 
+def _to_repo_rel(paths, root):
+    """Map user-supplied paths (relative to cwd, or absolute) to repo-root-relative POSIX."""
+    out = []
+    for p in paths:
+        ap = os.path.abspath(p)
+        rel = os.path.relpath(ap, root)
+        out.append(rel.replace(os.sep, "/"))
+    return out
+
+
 def _impact(args) -> int:
     root = gitio.repo_root(".")
     sources = gitio.tracked_py_and_data(root)
-    changed = args.files or gitio.changed_files(root, args.base)
+    changed = _to_repo_rel(args.files, root) if args.files else gitio.changed_files(root, args.base)
     changed = [c for c in changed if c in sources or core.is_test(c)]
     if not changed:
         print("No changed Python/data files detected.", file=sys.stderr)
@@ -37,9 +48,11 @@ def _impact(args) -> int:
 def _culprit(args) -> int:
     root = gitio.repo_root(".")
     sources = gitio.tracked_py_and_data(root)
-    if args.test not in sources:
+    test = _to_repo_rel([args.test], root)[0]
+    if test not in sources:
         print(f"Test file not found in repo: {args.test}", file=sys.stderr)
         return 2
+    args.test = test
     shas = gitio.commits_since(root, args.since)
     if not shas:
         print(f"No commits in {args.since}..HEAD", file=sys.stderr)
