@@ -47,5 +47,8 @@ Run any track with `python3 practice/<folder>/run.py`; each writes its own `RESU
 
 The 100%/exact ceilings are a property of *synthetic* data with a knowable generator; on the real hidden sets they stand for "the modeling is right," not "solved." See `PLAYBOOK.md` for the kickoff checklist and `practice/<folder>/NOTES.md` for each track's reasoning and what to do when the real brief differs.
 
+## Agent setup (Claude Code)
+`CLAUDE.md` plus `.claude/` turn the playbook into commands: `/kickoff` → `/adapt-track <slug>` → `/check-assumption` / `/iterate` → `/submit-check`. They are backed by three subagents (`track-scout`, `metric-auditor`, `solution-researcher`), a `track-adaptation` skill, and a track skeleton (`.claude/templates/_track_skeleton`) whose `run.py` flags holdout ties within noise and dev/holdout overfit gaps.
+
 ## Note on scope
 These are **practice harnesses on invented data**, written before the real problems were released, to rehearse the workflow. They are not the real submissions. Nothing here is affiliated with Builders or the sponsors.
