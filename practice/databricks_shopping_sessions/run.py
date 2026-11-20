@@ -30,13 +30,13 @@ def main():
             val.append((s[:k], s[k][0]))
     t0 = time.time()
     rec, cfg, val_score = S.v4_tuned(train, lambda build: score(build(fit), val)[1])
-    rows.append((f"v4 v3 tuned on a time split ({time.time() - t0:.0f}s)", score(rec, dev), score(rec, hidden)))
+    rows.append((f"v4 v3 tuned on a time split", score(rec, dev), score(rec, hidden)))
 
     rec5 = S.v5_hybrid(train)
     rows.append(("v5 hybrid: bigram + earlier items + revisit bonus", score(rec5, dev), score(rec5, hidden)))
     t0 = time.time()
     rec6, cfg6, val6 = S.v6_hybrid_tuned(train, lambda build: score(build(fit), val)[1])
-    rows.append((f"v6 v5 tuned on a time split ({time.time() - t0:.0f}s)", score(rec6, dev), score(rec6, hidden)))
+    rows.append((f"v6 v5 tuned on a time split", score(rec6, dev), score(rec6, hidden)))
 
     out = ["# Databricks Shopping Sessions (practice) - results", "",
            f"{len(train)} training sessions over {WEEKS - 1} weeks; 2,000 dev and 2,000 hidden sessions from the following week. Synthetic data; the real task and metric are unknown.", "",

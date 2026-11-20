@@ -93,7 +93,7 @@ def closure(start: str, deps: dict[str, set[str]]) -> dict[str, int]:
     while frontier:
         nxt = []
         for f in frontier:
-            for d in deps.get(f, ()):
+            for d in sorted(deps.get(f, ())):
                 if d not in dist:
                     dist[d] = dist[f] + 1
                     nxt.append(d)

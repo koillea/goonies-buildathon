@@ -8,9 +8,9 @@
 | v1 recent popularity (time-decayed) | 0.312 | 0.101 | 0.321 | 0.106 |
 | v2 next-item bigram + popularity fill | 0.660 | 0.310 | 0.680 | 0.313 |
 | v3 session co-visitation, recency-weighted | 0.588 | 0.221 | 0.606 | 0.225 |
-| v4 v3 tuned on a time split (11s) | 0.633 | 0.266 | 0.645 | 0.277 |
+| v4 v3 tuned on a time split | 0.633 | 0.266 | 0.645 | 0.277 |
 | v5 hybrid: bigram + earlier items + revisit bonus | 0.720 | 0.330 | 0.726 | 0.336 |
-| v6 v5 tuned on a time split (8s) | 0.712 | 0.334 | 0.715 | 0.337 |
+| v6 v5 tuned on a time split | 0.712 | 0.334 | 0.715 | 0.337 |
 
 v4 chose `{'window': 4, 'decay': 0.5, 'time_decay': 0.6, 'recency': 0.8, 'revisit': 0.4}` (validation MRR@20 0.265).
 

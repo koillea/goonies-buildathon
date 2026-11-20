@@ -6,10 +6,10 @@
 
 | Approach | Dev | Hidden |
 |---|---|---|
-| v0 latest commit | 22% | 26% |
-| v1 file named in log | 27% | 32% |
-| v2 static import cone | 18% | 15% |
-| v3 symbol from error + cone | 78% | 76% |
+| v0 latest commit | 22% | 27% |
+| v1 file named in log | 27% | 33% |
+| v2 static import cone | 17% | 15% |
+| v3 symbol from error + cone | 78% | 75% |
 | v4 full graph + semantic diff | 100% | 100% |
 
 ## Task B: which tests must re-run for a change (mean F1 / exact match)
