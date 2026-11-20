@@ -5,16 +5,12 @@
 //! each worker owns a disjoint set of keys (event_id for dedup, person for
 //! sessionizing) and needs no locks. Verified against oracle/reference.py.
 
-use parquet::basic::Compression;
-use parquet::data_type::{ByteArray, ByteArrayType, Int32Type, Int64Type};
-use parquet::file::properties::WriterProperties;
-use parquet::file::writer::SerializedFileWriter;
-use parquet::schema::parser::parse_message_type;
+mod pq;
+
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHasher};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Instant;
 
 const DAY: i64 = 86_400_000;
@@ -620,10 +616,7 @@ fn main() {
         }
     }
 
-    // write Parquet
-    let props = Arc::new(
-        WriterProperties::builder().set_compression(Compression::UNCOMPRESSED).set_dictionary_enabled(false).build(),
-    );
+    // write Parquet (minimal writer in pq.rs)
     let ud = out.join("user_daily");
     let cd = out.join("campaign_daily");
     std::fs::create_dir_all(&ud).unwrap();
@@ -636,100 +629,37 @@ fn main() {
         }
         g
     };
-    let user_schema = Arc::new(
-        parse_message_type(
-            "message user_daily { REQUIRED BYTE_ARRAY user_id (UTF8); REQUIRED INT32 day (DATE);
-             REQUIRED INT64 sessions; REQUIRED INT64 events; REQUIRED INT64 revenue_cents;
-             OPTIONAL BYTE_ARRAY top_category (UTF8); }",
-        )
-        .unwrap(),
-    );
     groups.into_par_iter().enumerate().for_each(|(gi, parts)| {
         let rows: Vec<&URow> = parts.iter().flatten().collect();
-        let f = std::fs::File::create(ud.join(format!("part-{gi}.parquet"))).unwrap();
-        let mut w = SerializedFileWriter::new(f, user_schema.clone(), props.clone()).unwrap();
-        let mut rg = w.next_row_group().unwrap();
-        let mut col = 0;
-        while let Some(mut c) = rg.next_column().unwrap() {
-            match col {
-                0 => {
-                    let v: Vec<ByteArray> = rows.iter().map(|r| ByteArray::from(r.name.to_vec())).collect();
-                    c.typed::<ByteArrayType>().write_batch(&v, None, None).unwrap();
-                }
-                1 => {
-                    let v: Vec<i32> = rows.iter().map(|r| r.day).collect();
-                    c.typed::<Int32Type>().write_batch(&v, None, None).unwrap();
-                }
-                2..=4 => {
-                    let v: Vec<i64> = rows
-                        .iter()
-                        .map(|r| match col {
-                            2 => r.sessions,
-                            3 => r.events,
-                            _ => r.revenue,
-                        })
-                        .collect();
-                    c.typed::<Int64Type>().write_batch(&v, None, None).unwrap();
-                }
-                _ => {
-                    let v: Vec<ByteArray> =
-                        rows.iter().filter_map(|r| r.top.map(|t| ByteArray::from(cat_name(t).to_vec()))).collect();
-                    let def: Vec<i16> = rows.iter().map(|r| r.top.is_some() as i16).collect();
-                    c.typed::<ByteArrayType>().write_batch(&v, Some(&def), None).unwrap();
-                }
-            }
-            c.close().unwrap();
-            col += 1;
-        }
-        rg.close().unwrap();
-        w.close().unwrap();
-    });
-
-    let camp_schema = Arc::new(
-        parse_message_type(
-            "message campaign_daily { REQUIRED BYTE_ARRAY campaign_id (UTF8); REQUIRED BYTE_ARRAY channel (UTF8);
-             REQUIRED INT32 day (DATE); REQUIRED INT64 sessions; REQUIRED INT64 purchasing_sessions;
-             REQUIRED INT64 revenue_cents; REQUIRED INT64 assisted_sessions; }",
+        pq::write(
+            &ud.join(format!("part-{gi}.parquet")),
+            &[
+                ("user_id", pq::Col::Str(rows.iter().map(|r| Some(r.name)).collect(), false)),
+                ("day", pq::Col::Date(rows.iter().map(|r| r.day).collect())),
+                ("sessions", pq::Col::I64(rows.iter().map(|r| r.sessions).collect())),
+                ("events", pq::Col::I64(rows.iter().map(|r| r.events).collect())),
+                ("revenue_cents", pq::Col::I64(rows.iter().map(|r| r.revenue).collect())),
+                ("top_category", pq::Col::Str(rows.iter().map(|r| r.top.map(cat_name)).collect(), true)),
+            ],
         )
-        .unwrap(),
-    );
+        .expect("write user_daily");
+    });
     let crows: Vec<((u32, i32), [i64; 4])> = camp_all.into_iter().collect();
-    let f = std::fs::File::create(cd.join("part-0.parquet")).unwrap();
-    let mut w = SerializedFileWriter::new(f, camp_schema, props).unwrap();
-    let mut rg = w.next_row_group().unwrap();
-    let mut col = 0;
-    while let Some(mut c) = rg.next_column().unwrap() {
-        match col {
-            0 | 1 => {
-                let v: Vec<ByteArray> = crows
-                    .iter()
-                    .map(|((cp, _), _)| {
-                        let s: B = if *cp == ORGANIC {
-                            b"organic"
-                        } else if col == 0 {
-                            camp_ids[*cp as usize]
-                        } else {
-                            camp_chan[*cp as usize]
-                        };
-                        ByteArray::from(s.to_vec())
-                    })
-                    .collect();
-                c.typed::<ByteArrayType>().write_batch(&v, None, None).unwrap();
-            }
-            2 => {
-                let v: Vec<i32> = crows.iter().map(|((_, d), _)| *d).collect();
-                c.typed::<Int32Type>().write_batch(&v, None, None).unwrap();
-            }
-            _ => {
-                let v: Vec<i64> = crows.iter().map(|(_, a)| a[col - 3]).collect();
-                c.typed::<Int64Type>().write_batch(&v, None, None).unwrap();
-            }
-        }
-        c.close().unwrap();
-        col += 1;
-    }
-    rg.close().unwrap();
-    w.close().unwrap();
+    let cid = |cp: u32| -> B { if cp == ORGANIC { b"organic" } else { camp_ids[cp as usize] } };
+    let cch = |cp: u32| -> B { if cp == ORGANIC { b"organic" } else { camp_chan[cp as usize] } };
+    pq::write(
+        &cd.join("part-0.parquet"),
+        &[
+            ("campaign_id", pq::Col::Str(crows.iter().map(|((c, _), _)| Some(cid(*c))).collect(), false)),
+            ("channel", pq::Col::Str(crows.iter().map(|((c, _), _)| Some(cch(*c))).collect(), false)),
+            ("day", pq::Col::Date(crows.iter().map(|((_, d), _)| *d).collect())),
+            ("sessions", pq::Col::I64(crows.iter().map(|(_, a)| a[0]).collect())),
+            ("purchasing_sessions", pq::Col::I64(crows.iter().map(|(_, a)| a[1]).collect())),
+            ("revenue_cents", pq::Col::I64(crows.iter().map(|(_, a)| a[2]).collect())),
+            ("assisted_sessions", pq::Col::I64(crows.iter().map(|(_, a)| a[3]).collect())),
+        ],
+    )
+    .expect("write campaign_daily");
     lap("written");
     // skip freeing gigabytes of memory on the way out
     std::process::exit(0);
