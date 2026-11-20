@@ -1,4 +1,37 @@
-# Goonies — Builders Buildathon prep
+# Goonies — Builders Buildathon
+
+## RWX Blast Radius submission (this repo's top level)
+
+`Dockerfile`, `selector.py` and `maps/maps.json` at the top of this repository are our entry for the RWX **Blast Radius** track: for each sqlglot patch, choose which tests to run and split them over up to 8 workers, minimising simulated CI seconds (busiest worker + 2 s per worker + 300 s per missed failing commit + CPU time).
+
+**How it decides** (`selector.py`):
+1. Parse the patch into the pinned-commit line numbers it touches.
+2. Map each line to its innermost function. Run only the tests that executed that function's body when the maps were built. A change that a test never reaches cannot alter that test's run.
+3. Lines outside any function (class attributes such as a dialect's `WEEK_OFFSET`, module tables) select every test that executed the file *or* instantiated a class defined there or in its bases. Code that runs only at import time selects the whole file's tests.
+4. Fixture edits run the tests that opened that fixture. Test-method edits run that test. Anything the maps cannot vouch for (new or deleted files, test helpers, unknown files) runs every test, because a run-all (~37 s) is far cheaper than a miss (300 s).
+5. Split the chosen tests longest-first over the worker count (1–8) that minimises busiest-worker time + 2 s per worker.
+
+**The maps** (`build/`) are built once from sqlglot at the pinned commit `eb11aec`, and committed. They hold:
+- per-test coverage, recorded with each test's own coverage context;
+- the sqlglot classes each test instantiates, with their bases;
+- the fixture files each test opens.
+
+The suite's process pools run in-process during the build, with every task pickled and unpickled as a real process boundary would, so work done "in a worker" is credited to its test and `serde` (sqlglot's pickling) counts as used. Nothing is derived from any patch. Rebuild with `bash build/rebuild_maps.sh <tests.json>`.
+
+**Local results on the 30 sample commits:**
+
+| Selector | Simulated seconds | Misses |
+|---|---|---|
+| Starter (run every test, 3 workers) | 1210.5 | 0 |
+| File-level coverage only | 1489.8 | 3 |
+| This selector | **248.1** | **0** |
+| Perfect oracle (only the failing tests) | 94.4 | 0 |
+
+Selector CPU is about 0.12 s per batch. It uses the Python standard library only.
+
+---
+
+## Prep work (before kickoff)
 
 Preparation for the [Builders Buildathon](https://www.joinbuilders.org/buildathon) (Ohio State, Nov 20–22, 2026). The four real problems are released at kickoff, **Fri Nov 20, 6:00 PM ET**. This repo is the dry run we do *before* then: read how the event scores, anticipate each track, and build a benchmark-and-iterate harness so that when the real brief drops we already have the workflow, the fallbacks, and the instincts.
 
