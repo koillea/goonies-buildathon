@@ -12,5 +12,6 @@ RUN cargo build --release --locked --offline && strip target/release/sessions
 FROM debian:bookworm-slim
 RUN useradd --uid 1000 --no-create-home --home-dir /scratch app
 COPY --from=build /src/target/release/sessions /app/sessions
+ENV GLIBC_TUNABLES=glibc.malloc.hugetlb=1:glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=17179869184
 USER 1000
 CMD ["/app/sessions"]

@@ -1,12 +1,16 @@
-# Shopping Sessions: fast exact pipeline
+# Shopping Sessions (Databricks), Builders Buildathon
 
-Rust, single binary. Reads `$DATA_DIR` (default `/data`), writes `$OUTPUT_DIR/user_daily/` and `$OUTPUT_DIR/campaign_daily/` as Parquet, uses `$NCPU` threads. Logs stage timings to stderr.
+The scorer builds the `Dockerfile` at the top of this repo. It's a Rust pipeline that turns the raw click-stream into the two exact daily tables.
 
-How it works:
-1. Every CSV is read into memory in parallel and cut into chunks on line boundaries.
-2. Chunks are parsed in parallel by hand-written parsers that follow `rules.md` exactly: quoting, `\r` as data, ASCII-only digits, three timestamp forms with full calendar checks.
-3. Events are sharded by `event_id` for dedup (smallest `ingest_ts`, before validation).
-4. Surviving events and clicks are sharded by person (union-find over `links/`, named by the byte-wise smallest ID).
-5. Each shard is sessionized and attributed independently, with a sliding 7-day click window per person.
-
-Correctness: it passes all 36 fixtures and matches the published dev answer exactly. It also matches an independent Python reference implementation on generated seeds.
+- **Build:** offline, from vendored crates (`vendor/`, `.cargo/config.toml`). No network needed.
+- **Run:** reads `$DATA_DIR`, writes Parquet to `$OUTPUT_DIR/user_daily/` and `$OUTPUT_DIR/campaign_daily/`, and uses `$NCPU` threads.
+- **How it works:**
+  1. Reads files in parallel and parses them with hand-written parsers that follow `rules.md` exactly.
+  2. Hash-shards events by `event_id` for dedup.
+  3. Shards events and clicks by person (union-find over linked IDs).
+  4. Sessionizes and attributes each person's events, using a sliding 7-day click window.
+  5. Writes Parquet with a minimal writer (`src/pq.rs`).
+- **Correctness:**
+  - It passes all 36 official fixtures and matches the published 1M-event dev answer exactly.
+  - It also matches `shopping-tools/reference.py`, a separate slow Python reference written straight from the rules, on generated seeds.
+- `shopping-tools/` isn't part of the image.

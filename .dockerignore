@@ -1,1 +1,4 @@
 target/
+shopping-tools/
+*.md
+!README.md
