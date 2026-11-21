@@ -135,6 +135,109 @@ fn field_q(f: B, quoted: bool) -> Result<Option<B>, ()> {
     Ok(if inner.is_empty() { None } else { Some(inner) })
 }
 
+/// 64-byte block masks: (commas, newlines, quotes), bit i = byte i.
+#[inline(always)]
+fn block_masks(p: &[u8]) -> (u64, u64, u64) {
+    #[cfg(target_feature = "avx2")]
+    unsafe {
+        use std::arch::x86_64::*;
+        let a = _mm256_loadu_si256(p.as_ptr() as *const __m256i);
+        let b = _mm256_loadu_si256(p.as_ptr().add(32) as *const __m256i);
+        let m = |v: __m256i, c: u8| -> u32 { _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, _mm256_set1_epi8(c as i8))) as u32 };
+        let j = |lo: u32, hi: u32| -> u64 { lo as u64 | ((hi as u64) << 32) };
+        return (j(m(a, b','), m(b, b',')), j(m(a, b'\n'), m(b, b'\n')), j(m(a, b'"'), m(b, b'"')));
+    }
+    #[allow(unreachable_code)]
+    {
+        let (mut c, mut n, mut q) = (0u64, 0u64, 0u64);
+        for (i, &x) in p[..64].iter().enumerate() {
+            c |= ((x == b',') as u64) << i;
+            n |= ((x == b'\n') as u64) << i;
+            q |= ((x == b'"') as u64) << i;
+        }
+        (c, n, q)
+    }
+}
+
+/// Finish one line given its comma positions and quote count (rules.md CSV dialect).
+#[inline(always)]
+fn finish_line<'a, const N: usize>(chunk: &'a [u8], start: usize, end: usize, commas: &[usize], nq: u32) -> Option<[Option<&'a [u8]>; N]> {
+    if end == start || commas.len() != N - 1 {
+        return None; // empty line or wrong field count
+    }
+    let mut out = [None; N];
+    let mut fs = start;
+    let mut quoted_pairs = 0u32;
+    for k in 0..N {
+        let fe = if k < N - 1 { commas[k] } else { end };
+        let len = fe - fs;
+        // quoted = field is at least 2 bytes and starts and ends with '"' (computed without branches)
+        // both reads stay inside the buffer even for an empty last field with no trailing newline
+        let first = *chunk.get(fs).unwrap_or(&0);
+        let last = *chunk.get(fe.wrapping_sub(1).max(fs)).unwrap_or(&0);
+        let isq = ((nq > 0) & (len >= 2) & (first == b'"') & (last == b'"')) as usize;
+        quoted_pairs += isq as u32;
+        let v = &chunk[fs + isq..fe - isq];
+        out[k] = if v.is_empty() { None } else { Some(v) };
+        fs = fe + 1;
+    }
+    // every quote must be one of the two around a whole field
+    if nq != 2 * quoted_pairs {
+        return None;
+    }
+    Some(out)
+}
+
+/// Scan a chunk of lines (each ending in '\n', the last one may not) and call `f` with each
+/// line's N fields, or None for a malformed line. Equivalent to lines() + fields::<N>().
+#[inline]
+fn scan_lines<'a, const N: usize>(chunk: &'a [u8], mut f: impl FnMut(Option<[Option<&'a [u8]>; N]>)) {
+    let n = chunk.len();
+    let mut start = 0usize;
+    let mut commas: [usize; 16] = [0; 16];
+    let mut nc = 0usize; // commas seen in the current line (capped)
+    let mut nq = 0u32;
+    let mut base = 0usize;
+    let mut pad = [0u8; 64];
+    while base < n {
+        let (c, nl, q) = if base + 64 <= n {
+            block_masks(&chunk[base..base + 64])
+        } else {
+            pad = [0u8; 64];
+            pad[..n - base].copy_from_slice(&chunk[base..]);
+            block_masks(&pad)
+        };
+        let mut m = c | nl;
+        let mut qleft = q; // quotes in this block not yet assigned to a line
+        while m != 0 {
+            let b = m.trailing_zeros();
+            m &= m - 1;
+            let bit = 1u64 << b;
+            let pos = base + b as usize;
+            if nl & bit != 0 {
+                let before = qleft & (bit - 1);
+                nq += before.count_ones();
+                qleft &= !(bit | (bit - 1));
+                f(if nc <= 15 { finish_line::<N>(chunk, start, pos, &commas[..nc], nq) } else { None });
+                start = pos + 1;
+                nc = 0;
+                nq = 0;
+            } else {
+                if nc < 16 {
+                    commas[nc] = pos;
+                }
+                nc += 1;
+            }
+        }
+        nq += qleft.count_ones();
+        base += 64;
+    }
+    let _ = pad;
+    if start < n {
+        f(if nc <= 15 { finish_line::<N>(chunk, start, n, &commas[..nc], nq) } else { None });
+    }
+}
+
 /// Split a line into exactly N fields; None if malformed. One pass over the bytes.
 #[inline]
 fn fields<const N: usize>(line: B) -> Option<[Option<B>; N]> {
@@ -743,6 +846,66 @@ fn main() {
 
     // events: parse + validate each copy, scatter by event_id
     let ev_chunks = chunks(&ev_bufs);
+    if let Ok(level) = std::env::var("PARSEBENCH") {
+        // single-threaded cost ladder over all event lines; prints ns/line per level
+        let level: u32 = level.parse().unwrap();
+        let t = Instant::now();
+        let (mut n, mut acc) = (0u64, 0u64);
+        let mut pay: Vec<(u64, u64, i64, i64)> = Vec::with_capacity(1 << 20);
+        if level >= 5 {
+            for &c in &ev_chunks {
+                scan_lines::<7>(c, |r| {
+                    n += 1;
+                    if let Some([eid, uid, ts, ing, _, _, _]) = r {
+                        acc += eid.map_or(0, |x| x.len()) as u64;
+                        if level >= 6 {
+                            acc = acc.wrapping_add((parse_ts(ts) ^ parse_ts(ing)) as u64);
+                        }
+                        if level >= 7 {
+                            acc = acc.wrapping_add(h12(eid.unwrap_or(b"")).0 ^ h12(uid.unwrap_or(b"")).1);
+                        }
+                    }
+                });
+            }
+            let el = t.elapsed().as_secs_f64();
+            eprintln!("PARSEBENCH level {level}: {n} lines, {:.1} ns/line (acc {acc})", el * 1e9 / n as f64);
+            std::process::exit(0);
+        }
+        for &c in &ev_chunks {
+            for l in lines(c) {
+                n += 1;
+                if level == 0 {
+                    acc += l.len() as u64;
+                    continue;
+                }
+                let Some([eid, uid, ts, ing, et, _pid, _price]) = fields::<7>(l) else { continue };
+                if level == 1 {
+                    acc += eid.map_or(0, |x| x.len()) as u64 + et.map_or(0, |x| x[0]) as u64;
+                    continue;
+                }
+                let (tsv, ingv) = (parse_ts(ts), parse_ts(ing));
+                if level == 2 {
+                    acc = acc.wrapping_add(tsv as u64 ^ ingv as u64);
+                    continue;
+                }
+                let (a, b) = h12(eid.unwrap_or(b""));
+                let (c2, d) = h12(uid.unwrap_or(b""));
+                if level == 3 {
+                    acc = acc.wrapping_add(a ^ b ^ c2 ^ d ^ tsv as u64);
+                    continue;
+                }
+                pay.push((a, c2, tsv, ingv));
+                if pay.len() == pay.capacity() {
+                    acc += pay.len() as u64;
+                    pay.clear();
+                }
+                let _ = (b, d);
+            }
+        }
+        let el = t.elapsed().as_secs_f64();
+        eprintln!("PARSEBENCH level {level}: {n} lines, {:.1} ns/line, {:.2}s (acc {acc})", el * 1e9 / n as f64, el);
+        std::process::exit(0);
+    }
     let per_chunk: Vec<(Vec<UEv>, Vec<DKey>)> = ev_chunks
         .par_iter()
         .enumerate()
@@ -750,9 +913,9 @@ fn main() {
             let cap = c.len() / 64 + 16;
             let mut pay: Vec<UEv> = Vec::with_capacity(cap);
             let mut keys: Vec<DKey> = Vec::with_capacity(cap);
-            for l in lines(c) {
-                let Some([eid, uid, ts, ing, et, pid, price]) = fields::<7>(l) else { continue };
-                let Some(eid) = eid else { continue };
+            scan_lines::<7>(c, |r| {
+                let Some([eid, uid, ts, ing, et, pid, price]) = r else { return };
+                let Some(eid) = eid else { return };
                 let ing = parse_ts(ing);
                 let ts = parse_ts(ts);
                 let kind = match et {
@@ -785,7 +948,7 @@ fn main() {
                 }
                 let (eh, eh2) = h12(eid);
                 keys.push(DKey { eh, eh2, ing, loc: ((ci as u64) << 32) | idx });
-            }
+            });
             (pay, keys)
         })
         .collect();
@@ -857,16 +1020,16 @@ fn main() {
         .par_iter()
         .map(|&c| {
             let mut sh: Vec<UCl> = Vec::with_capacity(c.len() / 40 + 16);
-            for l in lines(c) {
-                let Some([Some(cid), Some(uid), Some(camp), ts]) = fields::<4>(l) else { continue };
-                let Some(&camp) = campaigns.get(camp) else { continue };
+            scan_lines::<4>(c, |r| {
+                let Some([Some(cid), Some(uid), Some(camp), ts]) = r else { return };
+                let Some(&camp) = campaigns.get(camp) else { return };
                 let ts = parse_ts(ts);
                 if ts == BAD || ts < ws - WEEK || ts >= we {
-                    continue;
+                    return;
                 }
                 let (uh, uh2) = h12(uid);
                 sh.push(UCl { uh, uh2, uid, ts, cid, camp });
-            }
+            });
             sh
         })
         .collect();
