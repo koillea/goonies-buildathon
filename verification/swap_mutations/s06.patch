@@ -1,0 +1,13 @@
+diff --git a/sqlglot/parser.py b/sqlglot/parser.py
+index 456314b..43bec06 100644
+--- a/sqlglot/parser.py
++++ b/sqlglot/parser.py
+@@ -2639,7 +2639,7 @@ class Parser:
+ 
+             if (
+                 not expression
+-                and create_token_type == TokenType.FUNCTION
++                and create_token_type is TokenType.FUNCTION
+                 and isinstance(this, exp.UserDefinedFunction)
+                 and this.args.get("wrapped")
+             ):

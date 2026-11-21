@@ -1,0 +1,13 @@
+diff --git a/sqlglot/optimizer/scope.py b/sqlglot/optimizer/scope.py
+index 0d2c8fa..4b5fee8 100644
+--- a/sqlglot/optimizer/scope.py
++++ b/sqlglot/optimizer/scope.py
+@@ -225,7 +225,7 @@ class Scope:
+                 self._ordered_sources.append(node)
+             elif isinstance(node, exp.JoinHint):
+                 self._join_hints.append(node)
+-            elif type(node) is exp.Lateral or (
++            elif type(node) == exp.Lateral or (
+                 isinstance(node, exp.UDTF) and isinstance(node.parent, (exp.From, exp.Join))
+             ):
+                 if _is_semi_or_anti_join_rhs(node):

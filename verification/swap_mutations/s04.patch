@@ -1,0 +1,13 @@
+diff --git a/sqlglot/executor/env.py b/sqlglot/executor/env.py
+index 7ff9c93..a749569 100644
+--- a/sqlglot/executor/env.py
++++ b/sqlglot/executor/env.py
+@@ -102,7 +102,7 @@ def null_if_any(*required):
+             ]
+ 
+             def predicate(*args):
+-                return any(args[i] is None for i in required_indices)
++                return any(args[i] == None for i in required_indices)
+ 
+         else:
+ 

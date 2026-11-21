@@ -1,0 +1,13 @@
+diff --git a/sqlglot/optimizer/unnest_subqueries.py b/sqlglot/optimizer/unnest_subqueries.py
+index e84b207..8491458 100644
+--- a/sqlglot/optimizer/unnest_subqueries.py
++++ b/sqlglot/optimizer/unnest_subqueries.py
+@@ -395,7 +395,7 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
+     for key, _, predicate in keys:
+         # The key is projected by the subquery and the other side is moved out of it, so
+         # neither can reference columns from the opposite scope
+-        other_key = predicate.right if key is predicate.left else predicate.left
++        other_key = predicate.right if key == predicate.left else predicate.left
+         if any(id(c) in external_ids for c in key.find_all(exp.Column)) or any(
+             id(c) not in external_ids for c in other_key.find_all(exp.Column)
+         ):

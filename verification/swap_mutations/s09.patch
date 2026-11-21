@@ -1,0 +1,13 @@
+diff --git a/sqlglot/parser.py b/sqlglot/parser.py
+index 456314b..ce81022 100644
+--- a/sqlglot/parser.py
++++ b/sqlglot/parser.py
+@@ -2508,7 +2508,7 @@ class Parser:
+             materialized = False
+             iceberg = False
+ 
+-        if not kind or (iceberg and kind != "TABLE"):
++        if not kind or (iceberg and kind is not "TABLE"):
+             return self._parse_as_command(start)
+ 
+         concurrently = (

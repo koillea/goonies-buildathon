@@ -1,0 +1,13 @@
+diff --git a/sqlglot/expressions/core.py b/sqlglot/expressions/core.py
+index 2fc96ad..39bbb3c 100644
+--- a/sqlglot/expressions/core.py
++++ b/sqlglot/expressions/core.py
+@@ -1378,7 +1378,7 @@ class Expression(Expr):
+             meta["col"] = other.col
+             meta["start"] = other.start
+             meta["end"] = other.end
+-        elif other is not None:
++        elif other != None:
+             other_meta = other._meta
+             if other_meta:
+                 meta = self.meta

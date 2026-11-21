@@ -1,0 +1,13 @@
+diff --git a/sqlglot/parsers/duckdb.py b/sqlglot/parsers/duckdb.py
+index 88a17c4..22e3439 100644
+--- a/sqlglot/parsers/duckdb.py
++++ b/sqlglot/parsers/duckdb.py
+@@ -504,7 +504,7 @@ class DuckDBParser(parser.Parser):
+     def _parse_bracket(self, this: exp.Expr | None = None) -> exp.Expr | None:
+         bracket = super()._parse_bracket(this)
+ 
+-        if self.dialect.version < (1, 2) and isinstance(bracket, exp.Bracket):
++        if self.dialect.version <= (1, 2) and isinstance(bracket, exp.Bracket):
+             # https://duckdb.org/2025/02/05/announcing-duckdb-120.html#breaking-changes
+             bracket.set("returns_list_for_maps", True)
+ 

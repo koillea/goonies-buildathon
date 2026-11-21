@@ -1,0 +1,13 @@
+diff --git a/sqlglot/generator.py b/sqlglot/generator.py
+index 573d3c1..e6acf50 100644
+--- a/sqlglot/generator.py
++++ b/sqlglot/generator.py
+@@ -1955,7 +1955,7 @@ class Generator:
+ 
+         distinct = expression.args.get("distinct")
+         if (
+-            distinct is False
++            distinct == False
+             and op_type in (exp.Except, exp.Intersect)
+             and not self.EXCEPT_INTERSECT_SUPPORT_ALL_CLAUSE
+         ):

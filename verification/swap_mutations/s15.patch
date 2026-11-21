@@ -1,0 +1,13 @@
+diff --git a/sqlglot/tokenizer_core.py b/sqlglot/tokenizer_core.py
+index b5f0828..fcaa17c 100644
+--- a/sqlglot/tokenizer_core.py
++++ b/sqlglot/tokenizer_core.py
+@@ -1278,7 +1278,7 @@ class TokenizerCore:
+             if is_byte and 0xC2 <= value <= 0xF4:
+                 run = bytearray([value])
+                 run_end = end
+-                byte_count = 2 if value < 0xE0 else 3 if value < 0xF0 else 4
++                byte_count = 2 if value < 0xE0 else 3 if value <= 0xF0 else 4
+                 while len(run) < byte_count and sql[run_end : run_end + 1] == "\\":
+                     byte, byte_end = self._read_byte_escape(run_end)
+                     if not 0x80 <= byte <= 0xBF:

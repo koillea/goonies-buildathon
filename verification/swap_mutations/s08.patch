@@ -1,0 +1,13 @@
+diff --git a/sqlglot/optimizer/qualify_columns.py b/sqlglot/optimizer/qualify_columns.py
+index a7a0c01..94f345a 100644
+--- a/sqlglot/optimizer/qualify_columns.py
++++ b/sqlglot/optimizer/qualify_columns.py
+@@ -247,7 +247,7 @@ def _expand_using(scope: Scope, resolver: Resolver) -> tuple[dict[str, t.Any], l
+     # joins; empty when they keep their position
+     using_columns: list[str] = []
+ 
+-    if not any(join.args.get("using") or join.method == "NATURAL" for join in joins):
++    if not any(join.args.get("using") or join.method is "NATURAL" for join in joins):
+         return column_tables, using_columns
+ 
+     for source_name in ordered:

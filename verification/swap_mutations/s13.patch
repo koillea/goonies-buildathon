@@ -1,0 +1,13 @@
+diff --git a/sqlglot/executor/python.py b/sqlglot/executor/python.py
+index f5db5a9..6d92b04 100644
+--- a/sqlglot/executor/python.py
++++ b/sqlglot/executor/python.py
+@@ -251,7 +251,7 @@ class PythonExecutor:
+         projections = self.generate_tuple(step.projections)
+ 
+         for reader in table_iter:
+-            if len(sink) >= step.offset + step.limit:
++            if len(sink) > step.offset + step.limit:
+                 break
+ 
+             if condition and not context.eval(condition):

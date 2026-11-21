@@ -1,0 +1,13 @@
+diff --git a/sqlglot/lineage.py b/sqlglot/lineage.py
+index b887c71..cc02895 100644
+--- a/sqlglot/lineage.py
++++ b/sqlglot/lineage.py
+@@ -281,7 +281,7 @@ def to_node(
+                 (
+                     i
+                     for i, select in enumerate(selectable.selects)
+-                    if select.alias_or_name == column or select.is_star
++                    if select.alias_or_name is column or select.is_star
+                 ),
+                 -1,  # mypy will not allow a None here, but a negative index should never be returned
+             )

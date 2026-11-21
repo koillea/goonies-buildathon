@@ -1,0 +1,13 @@
+diff --git a/sqlglot/expressions/core.py b/sqlglot/expressions/core.py
+index 2fc96ad..309efb2 100644
+--- a/sqlglot/expressions/core.py
++++ b/sqlglot/expressions/core.py
+@@ -880,7 +880,7 @@ class Expression(Expr):
+                                     hash_ = hash((hash_, k, x.lower() if type(x) is str else x))
+                                 else:
+                                     hash_ = hash((hash_, k))
+-                        elif v is not None and v is not False:
++                        elif v is not None and v != False:
+                             hash_ = hash((hash_, k, v.lower() if vt is str else v))
+ 
+                 node._hash = hash_

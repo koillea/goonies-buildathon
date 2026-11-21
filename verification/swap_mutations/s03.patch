@@ -1,0 +1,13 @@
+diff --git a/sqlglot/planner.py b/sqlglot/planner.py
+index cdf8bbd..866d362 100644
+--- a/sqlglot/planner.py
++++ b/sqlglot/planner.py
+@@ -283,7 +283,7 @@ class Step:
+ 
+         offset: exp.Offset | None = expression.args.get("offset")
+ 
+-        if offset is not None:
++        if offset != None:
+             step.offset = int(offset.text("expression"))
+ 
+         return step

@@ -1,0 +1,13 @@
+diff --git a/sqlglot/tokenizer_core.py b/sqlglot/tokenizer_core.py
+index b5f0828..e031093 100644
+--- a/sqlglot/tokenizer_core.py
++++ b/sqlglot/tokenizer_core.py
+@@ -1022,7 +1022,7 @@ class TokenizerCore:
+                 and not scientific
+                 and not (
+                     numbers_can_be_underscore_separated
+-                    and self._current + 1 < self.size
++                    and self._current + 1 <= self.size
+                     and self.sql[self._current + 1] == "_"
+                 )
+             ):

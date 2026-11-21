@@ -101,3 +101,19 @@ python3 -I verification/scripts/score_mut.py sel.jsonl
 | Laser-damage claim (README line 99, dossier) | Still says "three 315 hits from 150 m". The recording shows 4 hits at 151/149/100/56 m | **INACCURATE** (unchanged) |
 | Base image pinned | `FROM python:3.13-slim`, no digest | minor risk |
 | Play strength or board score | No simulator. The only "Goonies" row on the builders page has score 257, which matches Goonies' Blast Radius score, not a Mech score | **UNVERIFIABLE**: no Mech score for this commit yet |
+
+---
+
+## Addendum: `koillea/rwx-blast-radius-v1` @ `96c71b8` (v7, latest push; includes v6 `6532704`)
+| Claim / check | Evidence | Verdict |
+|---|---|---|
+| README: "v7 126.699 s, 0 misses" on the sample | Official `score.py`, 3 runs under scorer flags: **126.699 s, 0 misses**, byte-identical output | CONFIRMED |
+| README: v4 179.454 s | Matches my earlier measurement of v5 (179.454 s; v5 changed nothing on the sample) | CONFIRMED |
+| README: CPU "about 0.4 s" | Measured **1.06 s** CPU in the container (109 MB RSS). Expected board figure on this sample: about 127.8 s | **understated** (minor, about 0.7 s) |
+| v6: "no collected test reads a docstring" | `tests/test_docs.py` uses unittest's `load_tests`, which pytest ignores, so tests.json has no doctest entries | CONFIRMED |
+| v7 comparison-swap rule is sound | 18 **new** single-operator swaps (`is`↔`==`, `is not`↔`!=`, `<`↔`<=`, `>=`↔`>`) at randomly chosen sites that ≥ 20 tests run (seeded; patches in `verification/swap_mutations/`). Ground truth from full suite runs: **0 misses**. In 12 cases the selector ran nothing and nothing failed; in 4 cases with real failures (1, 1, 5, 3 tests) it selected exactly the failing tests | CONFIRMED on this sample of swaps |
+| Swap rule only fires on a pure swap | Code check: exactly one `Compare` op may change, to its partner, and the rest of the AST must be identical, else it falls through to the normal rules. Chained comparisons are excluded, and import-time sites fall back | CONFIRMED by reading |
+| Old 12 mutations | Same as v5: **p_default (170 missed) and p_lazy (82 missed) still miss**. The other 10 are fine | UNCHANGED gap |
+| The sample gain comes from 3 of the 30 commits | The verbose log shows the swap rule firing on 3 sample commits (179.5 → 126.7 s) | measured |
+
+**Rules risk (human judgment needed):** `maps/cmp.json` is computed only from the pinned commit (a runtime probe evaluates both operators at every comparison while the pinned suite runs), not from any patch or answer. But it is keyed by *site + kind of edit* (an operator swap) and lists the tests where that edit could change behaviour. The rule bans "a table from a patch, **or from a kind of edit**, to the tests it breaks", while explicitly allowing "maps built from the pinned commit (coverage, imports, fixtures)". I read cmp.json as a value-sensitivity map, closer to coverage than to an answer table. It records where an edit *could* matter, not which tests *do* break. Still, it is the part of the entry a reviewer is most likely to question ("Top entries are read"). Consider confirming with the organizers before relying on it in the final.
