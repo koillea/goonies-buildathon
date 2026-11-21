@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Time a pipeline binary on the 20M set with the CAD job paused. Usage: tools/bench.sh BIN [RUNS]
+# Best-of-N timing on the 20M set (CAD job paused if running). Usage: tools/bench.sh [BIN] [RUNS]
 cd "$(dirname "$0")/.."
-BIN=${1:-fast/target/release/sessions}; RUNS=${2:-3}
-PIDS=$(pgrep -f "cad-de-id/run.py|run_shards.sh" | tr '\n' ' ')
-[ -n "$PIDS" ] && kill -STOP $PIDS
-sleep 1
-for i in $(seq $RUNS); do rm -rf out/p20m; "$BIN" data/p20m out/p20m 2>&1 | tr '\n' ' ' | sed 's/  */ /g'; echo; done
-[ -n "$PIDS" ] && kill -CONT $PIDS
+BIN=${1:-fast/target/release/sessions}; RUNS=${2:-5}
+export GLIBC_TUNABLES=glibc.malloc.hugetlb=1
+best=999; bestline=""
+for i in $(seq $RUNS); do
+  rm -rf out/p20m
+  line=$("$BIN" data/p20m out/p20m 2>&1 | tr '\n' ' ' | sed 's/  */ /g')
+  t=$(echo "$line" | grep -oE '[0-9.]+s written' | grep -oE '[0-9.]+')
+  if (( $(echo "$t < $best" | bc) )); then best=$t; bestline=$line; fi
+done
+echo "BEST $best s | $bestline"

@@ -464,67 +464,98 @@ fn main() {
             })
         })
         .collect();
-    let mut intern: FxHashMap<B, u32> = FxHashMap::default();
-    let mut names: Vec<B> = vec![];
-    let mut parent: Vec<u32> = vec![];
-    let id_of = |s: B, intern: &mut FxHashMap<B, u32>, names: &mut Vec<B>, parent: &mut Vec<u32>| -> u32 {
-        *intern.entry(s).or_insert_with(|| {
-            let i = names.len() as u32;
-            names.push(s);
-            parent.push(i);
+    // intern link IDs by 64-bit hash; if two different IDs ever share a hash, switch to exact string interning
+    struct Intern {
+        ih: FxHashMap<u64, u32>,
+        names: Vec<B>,
+        hashes: Vec<u64>,
+        parent: Vec<u32>,
+        clash: bool,
+        slow: FxHashMap<B, u32>,
+    }
+    impl Intern {
+        fn new_id(&mut self, s: B, h: u64) -> u32 {
+            let i = self.names.len() as u32;
+            self.names.push(s);
+            self.hashes.push(h);
+            self.parent.push(i);
+            if self.clash {
+                self.slow.insert(s, i);
+            }
             i
-        })
+        }
+        fn id(&mut self, s: B) -> u32 {
+            let h = h64(s);
+            if self.clash {
+                if let Some(&i) = self.slow.get(s) {
+                    return i;
+                }
+            }
+            match self.ih.get(&h) {
+                None => {
+                    let i = self.new_id(s, h);
+                    self.ih.insert(h, i);
+                    i
+                }
+                Some(&i) if self.names[i as usize] == s => i,
+                Some(_) => {
+                    if !self.clash {
+                        self.clash = true;
+                        self.slow = self.names.iter().enumerate().map(|(i, &n)| (n, i as u32)).collect();
+                    }
+                    match self.slow.get(s) {
+                        Some(&j) => j,
+                        None => self.new_id(s, h),
+                    }
+                }
+            }
+        }
+        fn get(&self, s: B, h: u64) -> Option<u32> {
+            if self.clash {
+                return self.slow.get(s).copied();
+            }
+            self.ih.get(&h).copied().filter(|&i| self.names[i as usize] == s)
+        }
+        fn find(&mut self, mut x: u32) -> u32 {
+            let p = &mut self.parent;
+            let mut r = x;
+            while p[r as usize] != r {
+                r = p[r as usize];
+            }
+            while p[x as usize] != r {
+                let n = p[x as usize];
+                p[x as usize] = r;
+                x = n;
+            }
+            r
+        }
+    }
+    let mut it = Intern {
+        ih: FxHashMap::default(),
+        names: vec![],
+        hashes: vec![],
+        parent: vec![],
+        clash: false,
+        slow: FxHashMap::default(),
     };
-    fn find(parent: &mut [u32], mut x: u32) -> u32 {
-        let mut r = x;
-        while parent[r as usize] != r {
-            r = parent[r as usize];
-        }
-        while parent[x as usize] != r {
-            let n = parent[x as usize];
-            parent[x as usize] = r;
-            x = n;
-        }
-        r
-    }
+    it.ih.reserve(pairs.len());
     for &(a, b) in &pairs {
-        let ia = id_of(a, &mut intern, &mut names, &mut parent);
-        let ib = id_of(b, &mut intern, &mut names, &mut parent);
-        let (ra, rb) = (find(&mut parent, ia), find(&mut parent, ib));
+        let (ia, ib) = (it.id(a), it.id(b));
+        let (ra, rb) = (it.find(ia), it.find(ib));
         if ra != rb {
-            let (lo, hi) = if names[ra as usize] <= names[rb as usize] { (ra, rb) } else { (rb, ra) };
-            parent[hi as usize] = lo;
+            let (lo, hi) = if it.names[ra as usize] <= it.names[rb as usize] { (ra, rb) } else { (rb, ra) };
+            it.parent[hi as usize] = lo;
         }
     }
-    let mut link_name: FxHashMap<B, B> = FxHashMap::default();
-    link_name.reserve(names.len());
-    for i in 0..names.len() as u32 {
-        let r = find(&mut parent, i);
-        if r != i {
-            link_name.insert(names[i as usize], names[r as usize]);
-        }
-    }
-    // uid hash -> (uid, person name, person hash); every hit is verified against the bytes
-    let mut link_h: FxHashMap<u64, (B, B, u64)> = FxHashMap::default();
-    link_h.reserve(link_name.len());
-    let mut link_h_clash = false;
-    for (&u, &r) in &link_name {
-        if let Some(prev) = link_h.insert(h64(u), (u, r, h64(r))) {
-            if prev.0 != u {
-                link_h_clash = true;
-            }
-        }
-    }
+    let rootv: Vec<u32> = (0..it.names.len() as u32).map(|i| it.find(i)).collect();
+    let it = it;
+    // uid -> (person name, person hash): one hash lookup, verified against the bytes
     let person = |u: B, uh: u64| -> (B, u64) {
-        if !link_h_clash {
-            match link_h.get(&uh) {
-                Some(&(lu, r, rh)) if lu == u => return (r, rh),
-                Some(_) => {}
-                None => return (u, uh),
+        match it.get(u, uh) {
+            Some(i) => {
+                let r = rootv[i as usize] as usize;
+                (it.names[r], it.hashes[r])
             }
-        }
-        match link_name.get(u) {
-            Some(&r) => (r, h64(r)),
             None => (u, uh),
         }
     };
@@ -627,8 +658,9 @@ fn main() {
             sh
         })
         .collect();
-    let pev_shards = scatter(per_shard);
     lap("events deduped");
+    let pev_shards = scatter(per_shard);
+    lap("events regrouped");
 
     // clicks: copies are identical, so duplicates cannot change credit or assists
     let cl_chunks = chunks(&cl_bufs);
