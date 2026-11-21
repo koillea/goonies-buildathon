@@ -9,7 +9,7 @@ if os.path.getsize(patch):
     if r.returncode:
         open(out + ".fail", "w").write("APPLYFAIL " + r.stderr); sys.exit(0)
 os.system(f"chmod -R a+rwX {w}")
-r = subprocess.run(["docker", "run", "--rm", "--network", "none", "--cpus", "1", "-v", f"{w}:/sqlglot", "br-gt",
+r = subprocess.run(["docker", "run", "--rm", "--network", "none", "--cpus", "1", "-v", f"{w}:/sqlglot", *(["-e", "PYTHONHASHSEED=" + os.environ["GT_HASHSEED"]] if os.environ.get("GT_HASHSEED") else []), "br-gt",
     "python", "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider", "-rfE", "--timeout=120", "--continue-on-collection-errors"],
     capture_output=True, text=True)
 log = r.stdout + r.stderr

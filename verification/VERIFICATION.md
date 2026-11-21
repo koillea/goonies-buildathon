@@ -141,3 +141,19 @@ python3 -I verification/scripts/score_mut.py sel.jsonl
 - **Selection doesn't depend on durations**, and the worker split re-plans from `tests.json`, so v9 stays close to the oracle as tests get slower.
 - **The run-everything fallback stops paying off when tests are slow.** On 8 workers it costs 36.8 s per commit at ×1, 152 s at ×5, 296 s at ×10, and 584 s at ×20 (more than a 300 s miss). One test dominates: `test_parser.py::TestParser::test_max_nodes` is 28.8 s of the suite's 103 s. The README's reasoning ("a run-all (~37 s) is far cheaper than a miss (300 s)") holds only at the recorded durations, and the code has no cost check. v9 never falls back to run-everything on the sample. Suggestion: compute the run-all cost from `tests.json` and, above about 300 s, fall back to the file-level set instead of every test.
 - **Slow machine:** a 70-commit batch (sample + all my mutation sets) took 2.8 s wall at 2 CPUs, 4.2 s at 0.5 CPU and 9.0 s at 0.25 CPU, with about 2.1 s CPU. The limit is 180 s (270 s in the final), so headroom is large. The server charged 2.17 s CPU on practice.
+
+---
+
+## Addendum: could real failures go unreported?
+| Possible blind spot | Check | Result |
+|---|---|---|
+| Ground-truth labels disagree with the organizers' | Ran all **30** sample commits through the harness and compared with `answers.json` | **30/30 identical** (code, fixture, comment, multi kinds) |
+| Subtest failures (pytest 9 prints PASSED beside SUBFAILED) | Collected every failing test id on any FAIL/ERROR/SUBFAILED line across all 48 earlier logs and compared with the parsed results | 1549 SUBFAILED lines, **0 failing ids missed by the parser** |
+| Interrupted or partial runs (collection abort, crash, OOM) | Every log checked for `Interrupted` / `INTERNALERROR` / `Killed`, and for a complete count | 0 incomplete. (The early p_indent/p_lazy aborts were rerun with `--continue-on-collection-errors`; an import error counts as failing every test in its file) |
+| Docker or harness failure reported as "0 failures" | Happened once (daemon died); those results were discarded and rerun. `gt.py` now writes `HARNESS_ERROR` if no test result is produced | guarded |
+| Failing ids that don't map to `tests.json` | Unmatched ids across all runs | only `tests/test_docs.py` (contributes no collected tests) |
+| Flaky, hash-order-dependent failures | 4 "selector ran nothing" swap patches rerun with `PYTHONHASHSEED` = random, 1, 12345 | identical (all 0 failing) |
+
+**Real failures the selector would not report (known):** p_default (`def`-line NameError at import, 170 tests) and p_lazy (new import in `sqlglot/__init__.py`, 82 tests), plus anything that only `test_lazy_load` (runs a subprocess) or the 3 `test_sqlglotc` tests would catch: they are in no map, so only a run-everything fallback selects them.
+
+**Residual limits:** one run per mutation (rare flakiness elsewhere is not ruled out); my mutation kinds are a sample, not the hidden distribution; the board's "0 commits missed" is only as good as the organizers' labels (the rules say mislabels found before publication are corrected for every team).
