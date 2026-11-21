@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "goonies-buildathon"
+version = "1.0.0"
+description = "Benchmark-and-iterate harnesses for the four Builders Buildathon tracks (RWX Blast Radius, Databricks Shopping Sessions, Machina CAD De-ID, Builders Mech Royale), on one shared dev-vs-hidden scoring contract."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+# Pure Python standard library only: the scorer fleet runs untrusted code in a
+# minimal sandbox (PLAYBOOK invariant). No runtime dependencies on purpose.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = [
+    "common",
+    "rwx_blast_radius_model",
+    "databricks_shopping_model",
+    "machina_deid_model",
+    "mech_royale_model",
+]
+include = [
+    "buildathon_core*",
+    "rwx_blast_radius*",
+    "databricks_shopping*",
+    "machina_deid*",
+    "mech_royale*",
+]
+exclude = ["tests*", "examples*"]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "common/tests",
+    "rwx_blast_radius_model/tests",
+    "databricks_shopping_model/tests",
+    "machina_deid_model/tests",
+    "mech_royale_model/tests",
+    "examples/tests",
+]
+# importlib mode lets every model folder keep its own tests/test_smoke.py etc.
+# without basename collisions.
+addopts = "-q --import-mode=importlib"
+pythonpath = [
+    "common",
+    "rwx_blast_radius_model",
+    "databricks_shopping_model",
+    "machina_deid_model",
+    "mech_royale_model",
+]
