@@ -2,6 +2,8 @@
 # Full correctness gate for fast/target/release/sessions: fixtures, dev answer, oracle on seeds.
 cd "$(dirname "$0")/.."
 BIN=$PWD/fast/target/release/sessions; K=kit/starter-duckdb/starter-duckdb
+# the checker's own inputs (oracle, fixtures, dev answer) must be untouched
+sha256sum --quiet -c tools/gate.sha256 || { echo "GATE FAIL: oracle/fixtures/dev-answer changed"; exit 1; }
 f=$(cd $K && python3 scripts/run_fixtures.py fixtures -- $BIN 2>&1 | tail -1)
 rm -rf out/chk-dev; $BIN data/dev out/chk-dev 2>/dev/null
 d=$(cd $K/scripts && python3 compare.py ../../../../out/chk-dev ../../../dev-answer/dev-answer | tail -1)

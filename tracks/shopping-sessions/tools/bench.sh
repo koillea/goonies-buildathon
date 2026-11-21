@@ -2,7 +2,7 @@
 # Best-of-N timing on the 20M set (CAD job paused if running). Usage: tools/bench.sh [BIN] [RUNS]
 cd "$(dirname "$0")/.."
 BIN=${1:-fast/target/release/sessions}; RUNS=${2:-5}
-export GLIBC_TUNABLES=glibc.malloc.hugetlb=1
+export GLIBC_TUNABLES=glibc.malloc.hugetlb=1:glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=17179869184
 best=999; bestline=""
 for i in $(seq $RUNS); do
   rm -rf out/p20m
