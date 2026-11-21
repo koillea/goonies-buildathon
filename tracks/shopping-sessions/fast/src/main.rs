@@ -26,6 +26,33 @@ const UNKNOWN_CAT: u32 = u32::MAX;
 type B = &'static [u8];
 
 // ------------------------------------------------------------------ helpers
+/// Fast 64-bit hash of a short byte string. Collisions are always checked against the
+/// original bytes by the callers, so this only has to be fast and well mixed.
+#[inline]
+fn h64(b: &[u8]) -> u64 {
+    let mut h: u64 = 0x9E37_79B9_7F4A_7C15 ^ (b.len() as u64).wrapping_mul(0xA076_1D64_78BD_642F);
+    let mut i = 0;
+    while i + 8 <= b.len() {
+        let w = u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        h = (h ^ w).wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        h ^= h >> 32;
+        i += 8;
+    }
+    let mut t = 0u64;
+    for (k, &c) in b[i..].iter().enumerate() {
+        t |= (c as u64) << (8 * k);
+    }
+    h = (h ^ t).wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+    h ^= h >> 29;
+    h = h.wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^ (h >> 32)
+}
+
+#[inline]
+fn shard_h(h: u64) -> usize {
+    (h >> 55) as usize % NSH
+}
+
 #[inline]
 fn shard_of(b: &[u8]) -> usize {
     let mut h = FxHasher::default();
@@ -52,7 +79,24 @@ fn field(f: B) -> Result<Option<B>, ()> {
     Ok(if v.is_empty() { None } else { Some(v) })
 }
 
-/// Split a line into exactly N fields; None if malformed.
+/// One field, given whether it contains a double quote: Err = malformed; Ok(None) = null.
+#[inline(always)]
+fn field_q(f: B, quoted: bool) -> Result<Option<B>, ()> {
+    if !quoted {
+        return Ok(if f.is_empty() { None } else { Some(f) });
+    }
+    let n = f.len();
+    if n < 2 || f[0] != b'"' || f[n - 1] != b'"' {
+        return Err(());
+    }
+    let inner = &f[1..n - 1];
+    if inner.contains(&b'"') {
+        return Err(());
+    }
+    Ok(if inner.is_empty() { None } else { Some(inner) })
+}
+
+/// Split a line into exactly N fields; None if malformed. One pass over the bytes.
 #[inline]
 fn fields<const N: usize>(line: B) -> Option<[Option<B>; N]> {
     if line.is_empty() {
@@ -61,18 +105,24 @@ fn fields<const N: usize>(line: B) -> Option<[Option<B>; N]> {
     let mut out = [None; N];
     let mut idx = 0;
     let mut start = 0;
-    for p in memchr::memchr_iter(b',', line) {
-        if idx >= N - 1 {
-            return None;
+    let mut quoted = false;
+    for (i, &c) in line.iter().enumerate() {
+        if c == b',' {
+            if idx >= N - 1 {
+                return None;
+            }
+            out[idx] = field_q(&line[start..i], quoted).ok()?;
+            idx += 1;
+            start = i + 1;
+            quoted = false;
+        } else if c == b'"' {
+            quoted = true;
         }
-        out[idx] = field(&line[start..p]).ok()?;
-        idx += 1;
-        start = p + 1;
     }
     if idx != N - 1 {
         return None;
     }
-    out[N - 1] = field(&line[start..]).ok()?;
+    out[N - 1] = field_q(&line[start..], quoted).ok()?;
     Some(out)
 }
 
@@ -92,15 +142,14 @@ fn d2(b: &[u8], i: usize) -> Option<i64> {
     if a < 10 && c < 10 { Some((a * 10 + c) as i64) } else { None }
 }
 
-/// "YYYY-MM-DDTHH:MM:SS" prefix -> epoch ms, validating the calendar.
-#[inline]
-fn civil(b: &[u8]) -> Option<i64> {
-    if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+/// "YYYY-MM-DD" -> days since epoch, with full calendar validation (None if impossible).
+fn date_days(b: &[u8]) -> Option<i64> {
+    if b[4] != b'-' || b[7] != b'-' {
         return None;
     }
     let y = d2(b, 0)? * 100 + d2(b, 2)?;
-    let (mo, d, h, mi, s) = (d2(b, 5)?, d2(b, 8)?, d2(b, 11)?, d2(b, 14)?, d2(b, 17)?);
-    if !(1..=12).contains(&mo) || h > 23 || mi > 59 || s > 59 {
+    let (mo, d) = (d2(b, 5)?, d2(b, 8)?);
+    if !(1..=12).contains(&mo) {
         return None;
     }
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
@@ -108,7 +157,43 @@ fn civil(b: &[u8]) -> Option<i64> {
     if d < 1 || d > md {
         return None;
     }
-    Some(((days_from_civil(y, mo, d) * 24 + h) * 60 + mi) * 60_000 + s * 1000)
+    Some(days_from_civil(y, mo, d))
+}
+
+thread_local! {
+    // direct-mapped cache: exact 10-byte date key -> days (i64::MIN = invalid date)
+    static DATES: std::cell::RefCell<[(u64, u16, i64); 64]> = const { std::cell::RefCell::new([(u64::MAX, 0, 0); 64]) };
+}
+
+#[inline]
+fn cached_days(b: &[u8]) -> Option<i64> {
+    let k1 = u64::from_le_bytes(b[0..8].try_into().unwrap());
+    let k2 = u16::from_le_bytes(b[8..10].try_into().unwrap());
+    let slot = ((k1 ^ (k1 >> 29) ^ (k2 as u64) * 0x9E37) as usize) & 63;
+    DATES.with(|c| {
+        let mut c = c.borrow_mut();
+        let e = c[slot];
+        if e.0 == k1 && e.1 == k2 {
+            return if e.2 == i64::MIN { None } else { Some(e.2) };
+        }
+        let r = date_days(b);
+        c[slot] = (k1, k2, r.unwrap_or(i64::MIN));
+        r
+    })
+}
+
+/// "YYYY-MM-DDTHH:MM:SS" prefix -> epoch ms, validating the calendar.
+#[inline]
+fn civil(b: &[u8]) -> Option<i64> {
+    if b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let (h, mi, s) = (d2(b, 11)?, d2(b, 14)?, d2(b, 17)?);
+    if h > 23 || mi > 59 || s > 59 {
+        return None;
+    }
+    let days = cached_days(b)?;
+    Some(((days * 24 + h) * 60 + mi) * 60_000 + s * 1000)
 }
 
 #[inline]
@@ -207,11 +292,12 @@ fn chunks(bufs: &[B]) -> Vec<B> {
 fn lines(chunk: B) -> impl Iterator<Item = B> {
     let n = chunk.len();
     let mut start = 0;
+    let mut it = memchr::memchr_iter(b'\n', chunk);
     std::iter::from_fn(move || {
         if start >= n {
             return None;
         }
-        let end = memchr::memchr(b'\n', &chunk[start..]).map_or(n, |i| start + i);
+        let end = it.next().unwrap_or(n);
         let line = &chunk[start..end];
         start = end + 1;
         Some(line)
@@ -231,31 +317,47 @@ fn small_table(path: &Path) -> Vec<(B, B)> {
 // ------------------------------------------------------------------ records
 #[derive(Clone, Copy)]
 struct Ev {
+    eh: u64, // h64(event_id)
     eid: B,
     uid: B,
-    pid: B,
     ing: i64,
     ts: i64,
-    price: i64,
+    price: i32,
+    cat: u32, // category of a purchase (UNKNOWN_CAT if not in products.csv)
     ok: bool,
-    kind: u8, // 0 view, 1 cart, 2 purchase
+    purchase: bool,
 }
 
 #[derive(Clone, Copy)]
 struct PEv {
+    pk: u64, // h64(person name); ties broken on `name`, so collisions cannot merge people
     name: B,
     ts: i64,
-    price: i64, // 0 unless purchase
+    price: i32, // 0 unless purchase
     cat: u32,
     purchase: bool,
 }
 
 #[derive(Clone, Copy)]
 struct PCl {
+    pk: u64,
     name: B,
     ts: i64,
     cid: B,
     camp: u32,
+}
+
+/// per_chunk[c][s] -> shards[s] as a list of the chunks' vectors (no copying).
+fn transpose<T: Send>(per_chunk: Vec<Vec<Vec<T>>>) -> Vec<Vec<Vec<T>>> {
+    let mut cols: Vec<Vec<Vec<T>>> = (0..NSH).map(|_| Vec::with_capacity(per_chunk.len())).collect();
+    for chunk in per_chunk {
+        for (s, v) in chunk.into_iter().enumerate() {
+            if !v.is_empty() {
+                cols[s].push(v);
+            }
+        }
+    }
+    cols
 }
 
 fn scatter<T: Send>(per_chunk: Vec<Vec<Vec<T>>>) -> Vec<Vec<T>> {
@@ -266,7 +368,15 @@ fn scatter<T: Send>(per_chunk: Vec<Vec<Vec<T>>>) -> Vec<Vec<T>> {
             cols[s].push(v);
         }
     }
-    cols.into_par_iter().map(|vs| vs.into_iter().flatten().collect()).collect()
+    cols.into_par_iter()
+        .map(|vs| {
+            let mut out = Vec::with_capacity(vs.iter().map(|v| v.len()).sum());
+            for v in vs {
+                out.extend(v);
+            }
+            out
+        })
+        .collect()
 }
 
 fn main() {
@@ -376,7 +486,30 @@ fn main() {
             link_name.insert(names[i as usize], names[r as usize]);
         }
     }
-    let person = |u: B| -> B { link_name.get(u).copied().unwrap_or(u) };
+    // uid hash -> (uid, person name, person hash); every hit is verified against the bytes
+    let mut link_h: FxHashMap<u64, (B, B, u64)> = FxHashMap::default();
+    link_h.reserve(link_name.len());
+    let mut link_h_clash = false;
+    for (&u, &r) in &link_name {
+        if let Some(prev) = link_h.insert(h64(u), (u, r, h64(r))) {
+            if prev.0 != u {
+                link_h_clash = true;
+            }
+        }
+    }
+    let person = |u: B, uh: u64| -> (B, u64) {
+        if !link_h_clash {
+            match link_h.get(&uh) {
+                Some(&(lu, r, rh)) if lu == u => return (r, rh),
+                Some(_) => {}
+                None => return (u, uh),
+            }
+        }
+        match link_name.get(u) {
+            Some(&r) => (r, h64(r)),
+            None => (u, uh),
+        }
+    };
     lap("links");
 
     // events: parse + validate each copy, scatter by event_id
@@ -398,56 +531,80 @@ fn main() {
                 };
                 let mut ok = uid.is_some() && pid.is_some() && kind < 3 && ts != BAD && ts >= ws && ts < we;
                 let mut p = 0;
+                let mut cat = 0;
                 if ok && kind == 2 {
                     match parse_price(price) {
-                        Some(v) => p = v,
+                        Some(v) => {
+                            p = v as i32;
+                            cat = products.get(pid.unwrap()).copied().unwrap_or(UNKNOWN_CAT);
+                        }
                         None => ok = false,
                     }
                 }
                 if ok && ing - ts > DAY {
                     ok = false;
                 }
-                sh[shard_of(eid)].push(Ev {
+                let eh = h64(eid);
+                sh[shard_h(eh)].push(Ev {
+                    eh,
                     eid,
                     uid: uid.unwrap_or(b""),
-                    pid: pid.unwrap_or(b""),
                     ing,
                     ts,
                     price: p,
+                    cat,
                     ok,
-                    kind,
+                    purchase: kind == 2,
                 });
             }
             sh
         })
         .collect();
-    let ev_shards = scatter(per_chunk);
+    let ev_shards = transpose(per_chunk);
     lap("events parsed");
 
     // dedup within each event shard, keep surviving events, re-scatter by person
     let per_shard: Vec<Vec<Vec<PEv>>> = ev_shards
         .into_par_iter()
-        .map(|evs| {
-            let mut best: FxHashMap<B, usize> = FxHashMap::default();
+        .map(|parts: Vec<Vec<Ev>>| {
+            let evs: Vec<&Ev> = parts.iter().flatten().collect(); // 8-byte refs, not 72-byte copies
+            let mut best: FxHashMap<u64, u32> = FxHashMap::default();
             best.reserve(evs.len());
+            let mut slow: FxHashMap<B, u32> = FxHashMap::default(); // eids whose hash collides
             for (i, e) in evs.iter().enumerate() {
-                best.entry(e.eid)
-                    .and_modify(|j| {
-                        if e.ing < evs[*j].ing {
-                            *j = i
+                let i = i as u32;
+                if !slow.is_empty() {
+                    if let Some(j) = slow.get_mut(e.eid) {
+                        if e.ing < evs[*j as usize].ing {
+                            *j = i;
                         }
-                    })
-                    .or_insert(i);
+                        continue;
+                    }
+                }
+                match best.entry(e.eh) {
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(i);
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                        let j = *o.get() as usize;
+                        if evs[j].eid == e.eid {
+                            if e.ing < evs[j].ing {
+                                o.insert(i);
+                            }
+                        } else {
+                            slow.insert(e.eid, i); // different event, same hash
+                        }
+                    }
+                }
             }
             let mut sh: Vec<Vec<PEv>> = (0..NSH).map(|_| Vec::new()).collect();
-            for &i in best.values() {
-                let e = &evs[i];
+            for &i in best.values().chain(slow.values()) {
+                let e = evs[i as usize];
                 if !e.ok {
                     continue;
                 }
-                let name = person(e.uid);
-                let cat = if e.kind == 2 { products.get(e.pid).copied().unwrap_or(UNKNOWN_CAT) } else { 0 };
-                sh[shard_of(name)].push(PEv { name, ts: e.ts, price: e.price, cat, purchase: e.kind == 2 });
+                let (name, pk) = person(e.uid, h64(e.uid));
+                sh[shard_h(pk)].push(PEv { pk, name, ts: e.ts, price: e.price, cat: e.cat, purchase: e.purchase });
             }
             sh
         })
@@ -468,8 +625,8 @@ fn main() {
                 if ts == BAD || ts < ws - WEEK || ts >= we {
                     continue;
                 }
-                let name = person(uid);
-                sh[shard_of(name)].push(PCl { name, ts, cid, camp });
+                let (name, pk) = person(uid, h64(uid));
+                sh[shard_h(pk)].push(PCl { pk, name, ts, cid, camp });
             }
             sh
         })
@@ -490,9 +647,21 @@ fn main() {
         .into_par_iter()
         .zip(pcl_shards.into_par_iter())
         .map(|(mut evs, mut cls)| {
-            evs.sort_unstable_by(|a, b| a.name.cmp(b.name).then(a.ts.cmp(&b.ts)));
+            // (pk, name) groups one person even if two names share a hash
+            evs.sort_unstable_by_key(|e| (e.pk, e.ts));
+            // a person hash shared by two different names would interleave them: detect and re-sort exactly
+            if evs.windows(2).any(|w| w[0].pk == w[1].pk && w[0].name != w[1].name) {
+                evs.sort_unstable_by(|a, b| a.pk.cmp(&b.pk).then_with(|| a.name.cmp(b.name)).then(a.ts.cmp(&b.ts)));
+            }
             // by ts ascending, then click_id DESCENDING: the last eligible click is the winner
-            cls.sort_unstable_by(|a, b| a.name.cmp(b.name).then(a.ts.cmp(&b.ts)).then(b.cid.cmp(a.cid)));
+            cls.sort_unstable_by(|a, b| {
+                a.pk.cmp(&b.pk).then(a.ts.cmp(&b.ts)).then_with(|| b.cid.cmp(a.cid))
+            });
+            if cls.windows(2).any(|w| w[0].pk == w[1].pk && w[0].name != w[1].name) {
+                cls.sort_unstable_by(|a, b| {
+                    a.pk.cmp(&b.pk).then_with(|| a.name.cmp(b.name)).then(a.ts.cmp(&b.ts)).then_with(|| b.cid.cmp(a.cid))
+                });
+            }
             let mut urows: Vec<URow> = vec![];
             let mut camp: FxHashMap<(u32, i32), [i64; 4]> = FxHashMap::default();
             let mut ci = 0usize;
@@ -500,16 +669,16 @@ fn main() {
             let mut cats: Vec<(u32, i64)> = vec![];
             let mut active: FxHashMap<u32, u32> = FxHashMap::default();
             while i < evs.len() {
-                let name = evs[i].name;
+                let (pk, name) = (evs[i].pk, evs[i].name);
                 let mut j = i;
-                while j < evs.len() && evs[j].name == name {
+                while j < evs.len() && evs[j].pk == pk && evs[j].name == name {
                     j += 1;
                 }
-                while ci < cls.len() && cls[ci].name < name {
+                while ci < cls.len() && (cls[ci].pk, cls[ci].name) < (pk, name) {
                     ci += 1;
                 }
                 let mut cj = ci;
-                while cj < cls.len() && cls[cj].name == name {
+                while cj < cls.len() && cls[cj].pk == pk && cls[cj].name == name {
                     cj += 1;
                 }
                 let pcl = &cls[ci..cj];
@@ -531,7 +700,7 @@ fn main() {
                         n += 1;
                         if x.purchase {
                             purch = true;
-                            rev += x.price;
+                            rev += x.price as i64;
                         }
                         e += 1;
                     }
@@ -550,8 +719,8 @@ fn main() {
                     for x in &evs[k..e] {
                         if x.purchase {
                             match cats.iter_mut().find(|c| c.0 == x.cat) {
-                                Some(c) => c.1 += x.price,
-                                None => cats.push((x.cat, x.price)),
+                                Some(c) => c.1 += x.price as i64,
+                                None => cats.push((x.cat, x.price as i64)),
                             }
                         }
                     }

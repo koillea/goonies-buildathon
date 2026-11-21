@@ -1,0 +1,1 @@
+/home/user/goonies-buildathon/tracks/shopping-sessions/fast/target-prof/release/sessions: /home/user/goonies-buildathon/tracks/shopping-sessions/fast/src/main.rs /home/user/goonies-buildathon/tracks/shopping-sessions/fast/src/pq.rs
