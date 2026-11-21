@@ -1,6 +1,19 @@
-"""Approaches for the practice Shopping Sessions benchmark, weakest to strongest.
+"""Recommenders for the Shopping Sessions track, weakest to strongest.
 
-Each builder takes the training sessions and returns recommend(prefix) -> ranked item list.
+Lifted verbatim (behaviour-preserving) from the original
+``practice/databricks_shopping_sessions/solutions.py``. Each function is a
+*builder*: it takes the training sessions and returns ``recommend(prefix) ->
+ranked item list``. The ladder climbs by modelling the real transition signal in
+a session, not by leaning on global popularity:
+
+    global popularity -> recent popularity -> next-item bigram -> symmetric
+    co-visitation -> (tuned) -> directional hybrid -> (tuned)
+
+Two findings the climb encodes (see the track README): a *directional*
+next-item count beats *symmetric* co-visitation, and the next event is the same
+item the shopper is on ~14% of the time, so revisits must be allowed, not
+excluded. ``v4_tuned``/``v6_hybrid_tuned`` grid-search on a time-based split
+*inside* the training data -- never on the leaderboard.
 """
 from __future__ import annotations
 
