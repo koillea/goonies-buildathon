@@ -87,3 +87,17 @@ python3 -I verification/scripts/gt.py verification/mutations/<id>.patch <outpref
 DATA_DIR=<dir with commits/ and tests.json> python3 -I selector.py > sel.jsonl
 python3 -I verification/scripts/score_mut.py sel.jsonl
 ```
+
+---
+
+## Addendum: `koillea/mech-royale-goonies` @ `1bc77f0` ("Mech Royale bot v1", the only commit)
+| Check | Evidence | Verdict |
+|---|---|---|
+| Same as the verified mirror branch `096f2b7` | `diff -r`: identical, file for file | CONFIRMED |
+| Kit files untouched | `protocol.md`, `check.py`, stream, arena and `mechfight.py` byte-identical to the official kit | CONFIRMED |
+| Submittable layout | `Dockerfile` at top level, 2.1 MB (cap 20 MB), public | CONFIRMED |
+| Official kit check in the scorer sandbox (fresh build from this clone) | `ready in 548 ms`, 300/300 in time, 0 late, 0 wrong tick, 0 bad lines, debug drawings within caps: **PASS** | CONFIRMED |
+| Repo gate (`tools/quality_gate.py`) | all checks passed | CONFIRMED |
+| Laser-damage claim (README line 99, dossier) | Still says "three 315 hits from 150 m". The recording shows 4 hits at 151/149/100/56 m | **INACCURATE** (unchanged) |
+| Base image pinned | `FROM python:3.13-slim`, no digest | minor risk |
+| Play strength or board score | No simulator. The only "Goonies" row on the builders page has score 257, which matches Goonies' Blast Radius score, not a Mech score | **UNVERIFIABLE**: no Mech score for this commit yet |
