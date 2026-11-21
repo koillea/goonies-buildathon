@@ -259,11 +259,29 @@ fn csv_files(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
+unsafe extern "C" {
+    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
+}
+
+/// Map a file read-only (no copy, no allocation); falls back to reading it.
+fn map_file(p: &Path) -> B {
+    use std::os::fd::AsRawFd;
+    let f = std::fs::File::open(p).expect("open");
+    let len = f.metadata().expect("stat").len() as usize;
+    if len == 0 {
+        return &[];
+    }
+    // PROT_READ=1, MAP_PRIVATE=2, MAP_POPULATE=0x8000
+    let ptr = unsafe { mmap(std::ptr::null_mut(), len, 1, 2 | 0x8000, f.as_raw_fd(), 0) };
+    if ptr as isize == -1 || ptr.is_null() {
+        return Box::leak(std::fs::read(p).expect("read").into_boxed_slice());
+    }
+    // the mapping outlives the File handle and is never unmapped (process exits)
+    unsafe { std::slice::from_raw_parts(ptr, len) }
+}
+
 fn load(paths: &[PathBuf]) -> Vec<B> {
-    paths
-        .par_iter()
-        .map(|p| &*Box::leak(std::fs::read(p).expect("read").into_boxed_slice()))
-        .collect()
+    paths.par_iter().map(|p| map_file(p)).collect()
 }
 
 /// Data region of each file (after the header line), cut into chunks that end on '\n'.
