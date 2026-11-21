@@ -899,10 +899,18 @@ fn main() {
     }
     let pev_slices = shard_slices(&mut pev_all, &pev_off);
     let pcl_slices = shard_slices(&mut pcl_all, &pcl_off);
-    let results: Vec<(Vec<URow>, FxHashMap<(u32, i32), [i64; 4]>)> = pev_slices
+    // dense campaign x day accumulators (sessions start inside the window, so days are bounded)
+    let day0 = ws.div_euclid(DAY) as i32;
+    let ndays = ((we - 1).div_euclid(DAY) as i32 - day0 + 1) as usize;
+    let ncamp = camp_ids.len() + 1; // last slot = organic
+    let cidx = |c: u32, day: i32| -> usize {
+        let c = if c == ORGANIC { ncamp - 1 } else { c as usize };
+        c * ndays + (day - day0) as usize
+    };
+    let results: Vec<(Vec<URow>, Vec<[i64; 4]>)> = pev_slices
         .into_par_iter()
         .zip(pcl_slices.into_par_iter())
-        .map(|(evs, cls)| {
+        .fold(|| (Vec::<URow>::new(), vec![[0i64; 4]; ncamp * ndays]), |(mut urows, mut camp), (evs, cls)| {
             // (pk, name) groups one person even if two names share a hash
             // valid events lie in [ws, we): ts - ws fits in 32 bits
             sort_by_pk_ts(evs, ws, |e| e.pk, |e| e.ts);
@@ -930,12 +938,10 @@ fn main() {
                     (a.pk, a.pk2, a.ts).cmp(&(b.pk, b.pk2, b.ts)).then_with(|| b.cid.cmp(a.cid))
                 });
             }
-            let mut urows: Vec<URow> = vec![];
-            let mut camp: FxHashMap<(u32, i32), [i64; 4]> = FxHashMap::default();
             let mut ci = 0usize;
             let mut i = 0usize;
             let mut cats: Vec<(u32, i64)> = vec![];
-            let mut active: FxHashMap<u32, u32> = FxHashMap::default();
+            let mut active: Vec<(u32, u32)> = Vec::new(); // (campaign, clicks in window)
             while i < evs.len() {
                 let (pk, pk2, name) = (evs[i].pk, evs[i].pk2, evs[i].name);
                 let mut j = i;
@@ -994,24 +1000,29 @@ fn main() {
                     }
                     // attribution window: start - WEEK <= click.ts <= start
                     while hi < pcl.len() && pcl[hi].ts <= start {
-                        *active.entry(pcl[hi].camp).or_insert(0) += 1;
+                        let c = pcl[hi].camp;
+                        match active.iter_mut().find(|x| x.0 == c) {
+                            Some(x) => x.1 += 1,
+                            None => active.push((c, 1)),
+                        }
                         hi += 1;
                     }
                     while lo < hi && pcl[lo].ts < start - WEEK {
-                        let c = active.get_mut(&pcl[lo].camp).unwrap();
-                        *c -= 1;
-                        if *c == 0 {
-                            active.remove(&pcl[lo].camp);
+                        let c = pcl[lo].camp;
+                        let k = active.iter().position(|x| x.0 == c).unwrap();
+                        active[k].1 -= 1;
+                        if active[k].1 == 0 {
+                            active.swap_remove(k);
                         }
                         lo += 1;
                     }
                     let credit = if hi > lo { pcl[hi - 1].camp } else { ORGANIC };
-                    let a = camp.entry((credit, day)).or_insert([0; 4]);
+                    let a = &mut camp[cidx(credit, day)];
                     a[0] += 1;
                     a[1] += purch as i64;
                     a[2] += rev;
-                    for &c in active.keys() {
-                        camp.entry((c, day)).or_insert([0; 4])[3] += 1;
+                    for &(c, _) in &active {
+                        camp[cidx(c, day)][3] += 1;
                     }
                     k = e;
                 }
@@ -1041,15 +1052,23 @@ fn main() {
     lap("sessionized");
 
     // merge campaign partials
-    let mut camp_all: FxHashMap<(u32, i32), [i64; 4]> = FxHashMap::default();
+    let mut dense = vec![[0i64; 4]; ncamp * ndays];
     let mut user_parts: Vec<Vec<URow>> = vec![];
     for (u, c) in results {
         user_parts.push(u);
-        for (k, v) in c {
-            let a = camp_all.entry(k).or_insert([0; 4]);
+        for (a, v) in dense.iter_mut().zip(c) {
             for t in 0..4 {
                 a[t] += v[t];
             }
+        }
+    }
+    // a (campaign, day) row exists when it was credited or assisted at least once
+    let mut camp_all: FxHashMap<(u32, i32), [i64; 4]> = FxHashMap::default();
+    for (i, v) in dense.iter().enumerate() {
+        if v[0] > 0 || v[3] > 0 {
+            let c = i / ndays;
+            let c = if c == ncamp - 1 { ORGANIC } else { c as u32 };
+            camp_all.insert((c, day0 + (i % ndays) as i32), *v);
         }
     }
 
