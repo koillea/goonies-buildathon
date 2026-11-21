@@ -30,7 +30,18 @@ type B = &'static [u8];
 /// original bytes by the callers, so this only has to be fast and well mixed.
 #[inline]
 fn h64(b: &[u8]) -> u64 {
-    let mut h: u64 = 0x9E37_79B9_7F4A_7C15 ^ (b.len() as u64).wrapping_mul(0xA076_1D64_78BD_642F);
+    h64s(b, 0x9E37_79B9_7F4A_7C15)
+}
+
+/// Independent second hash: (h64, h2) together identify a string (2^-128 collision odds).
+#[inline]
+fn h2(b: &[u8]) -> u64 {
+    h64s(b, 0xD6E8_FEB8_6659_FD93)
+}
+
+#[inline]
+fn h64s(b: &[u8], seed: u64) -> u64 {
+    let mut h: u64 = seed ^ (b.len() as u64).wrapping_mul(0xA076_1D64_78BD_642F);
     let mut i = 0;
     while i + 8 <= b.len() {
         let w = u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
@@ -106,18 +117,44 @@ fn fields<const N: usize>(line: B) -> Option<[Option<B>; N]> {
     let mut idx = 0;
     let mut start = 0;
     let mut quoted = false;
-    for (i, &c) in line.iter().enumerate() {
-        if c == b',' {
-            if idx >= N - 1 {
-                return None;
-            }
-            out[idx] = field_q(&line[start..i], quoted).ok()?;
-            idx += 1;
-            start = i + 1;
-            quoted = false;
-        } else if c == b'"' {
-            quoted = true;
+    // SWAR: find ',' and '"' 8 bytes at a time
+    const LO: u64 = 0x0101_0101_0101_0101;
+    const HI: u64 = 0x8080_8080_8080_8080;
+    let n = line.len();
+    let mut base = 0;
+    while base < n {
+        let w = if base + 8 <= n {
+            u64::from_le_bytes(line[base..base + 8].try_into().unwrap())
+        } else {
+            let mut t = [0u8; 8];
+            t[..n - base].copy_from_slice(&line[base..]);
+            u64::from_le_bytes(t)
+        };
+        let xc = w ^ (LO * b',' as u64);
+        let xq = w ^ (LO * b'"' as u64);
+        // exact zero-byte masks (no false positives from borrows)
+        let zc = !(((xc & !HI) + !HI) | xc | !HI);
+        let zq = !(((xq & !HI) + !HI) | xq | !HI);
+        let mut m = zc | zq;
+        if base + 8 > n {
+            m &= (1u64 << ((n - base) * 8)) - 1;
         }
+        while m != 0 {
+            let i = base + (m.trailing_zeros() / 8) as usize;
+            m &= m - 1;
+            if line[i] == b',' {
+                if idx >= N - 1 {
+                    return None;
+                }
+                out[idx] = field_q(&line[start..i], quoted).ok()?;
+                idx += 1;
+                start = i + 1;
+                quoted = false;
+            } else {
+                quoted = true;
+            }
+        }
+        base += 8;
     }
     if idx != N - 1 {
         return None;
@@ -169,7 +206,7 @@ thread_local! {
 fn cached_days(b: &[u8]) -> Option<i64> {
     let k1 = u64::from_le_bytes(b[0..8].try_into().unwrap());
     let k2 = u16::from_le_bytes(b[8..10].try_into().unwrap());
-    let slot = ((k1 ^ (k1 >> 29) ^ (k2 as u64) * 0x9E37) as usize) & 63;
+    let slot = ((k1 ^ ((k2 as u64) << 48)).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 58) as usize;
     DATES.with(|c| {
         let mut c = c.borrow_mut();
         let e = c[slot];
@@ -337,6 +374,8 @@ fn small_table(path: &Path) -> Vec<(B, B)> {
 struct Ev {
     eh: u64, // h64(event_id)
     eid: B,
+    uh: u64, // (h64, h2) of user_id, hashed at parse time while the line is in cache
+    uh2: u64,
     uid: B,
     ing: i64,
     ts: i64,
@@ -347,8 +386,30 @@ struct Ev {
 }
 
 #[derive(Clone, Copy)]
+struct UEv {
+    uh: u64,
+    uh2: u64,
+    uid: B,
+    ts: i64,
+    price: i32,
+    cat: u32,
+    purchase: bool,
+}
+
+#[derive(Clone, Copy)]
+struct UCl {
+    uh: u64,
+    uh2: u64,
+    uid: B,
+    ts: i64,
+    cid: B,
+    camp: u32,
+}
+
+#[derive(Clone, Copy)]
 struct PEv {
-    pk: u64, // h64(person name); ties broken on `name`, so collisions cannot merge people
+    pk: u64, // (pk, pk2) = (h64, h2) of the person's name
+    pk2: u64,
     name: B,
     ts: i64,
     price: i32, // 0 unless purchase
@@ -359,10 +420,66 @@ struct PEv {
 #[derive(Clone, Copy)]
 struct PCl {
     pk: u64,
+    pk2: u64,
     name: B,
     ts: i64,
     cid: B,
     camp: u32,
+}
+
+struct SendPtr<T>(*mut T);
+unsafe impl<T> Send for SendPtr<T> {}
+unsafe impl<T> Sync for SendPtr<T> {}
+
+/// Radix partition: every record is written exactly once into one contiguous array,
+/// grouped by shard. Returns the array and NSH+1 shard offsets.
+fn partition<T: Copy + Send + Sync>(parts: Vec<Vec<T>>, key: impl Fn(&T) -> usize + Sync) -> (Vec<T>, Vec<usize>) {
+    let counts: Vec<Vec<usize>> = parts
+        .par_iter()
+        .map(|v| {
+            let mut c = vec![0usize; NSH];
+            for x in v {
+                c[key(x)] += 1;
+            }
+            c
+        })
+        .collect();
+    let mut starts: Vec<Vec<usize>> = vec![vec![0; NSH]; parts.len()];
+    let mut off = vec![0usize; NSH + 1];
+    let mut run = 0;
+    for sh in 0..NSH {
+        off[sh] = run;
+        for c in 0..parts.len() {
+            starts[c][sh] = run;
+            run += counts[c][sh];
+        }
+    }
+    off[NSH] = run;
+    let mut out: Vec<T> = Vec::with_capacity(run);
+    let ptr = SendPtr(out.as_mut_ptr());
+    let ptr = &ptr;
+    parts.par_iter().zip(starts.into_par_iter()).for_each(|(v, mut pos)| {
+        for x in v {
+            let k = key(x);
+            // SAFETY: each (chunk, shard) owns the disjoint range [starts, starts+count)
+            unsafe { ptr.0.add(pos[k]).write(*x) };
+            pos[k] += 1;
+        }
+    });
+    // SAFETY: all `run` slots were written above
+    unsafe { out.set_len(run) };
+    (out, off)
+}
+
+/// Split a partitioned array into disjoint mutable shard slices.
+fn shard_slices<'a, T>(mut all: &'a mut [T], off: &[usize]) -> Vec<&'a mut [T]> {
+    let mut v = Vec::with_capacity(NSH);
+    for sh in 0..NSH {
+        let (a, b) = all.split_at_mut(off[sh + 1] - off[sh]);
+        v.push(a);
+        all = b;
+    }
+    v
 }
 
 /// per_chunk[c][s] -> shards[s] as a list of the chunks' vectors (no copying).
@@ -549,24 +666,50 @@ fn main() {
     }
     let rootv: Vec<u32> = (0..it.names.len() as u32).map(|i| it.find(i)).collect();
     let it = it;
-    // uid -> (person name, person hash): one hash lookup, verified against the bytes
-    let person = |u: B, uh: u64| -> (B, u64) {
+    // linked uid h64 -> (uid h2, root h64, root h2, root index): one cache miss per lookup
+    let mut lk: FxHashMap<u64, (u64, u64, u64, u32)> = FxHashMap::default();
+    lk.reserve(it.names.len());
+    let mut lk_clash = it.clash;
+    for (i, &n) in it.names.iter().enumerate() {
+        let r = rootv[i] as usize;
+        let v = (h2(n), it.hashes[r], h2(it.names[r]), r as u32);
+        if lk.insert(it.hashes[i], v).is_some() {
+            lk_clash = true; // two linked IDs share a 64-bit hash: use the exact path
+        }
+    }
+    // the same table split by uid-hash shard, so each shard's lookups stay in cache
+    let lks: Vec<FxHashMap<u64, (u64, u64, u64, u32)>> = {
+        let mut parts: Vec<Vec<(u64, (u64, u64, u64, u32))>> = (0..NSH).map(|_| Vec::new()).collect();
+        for (&k, &v) in &lk {
+            parts[shard_h(k)].push((k, v));
+        }
+        parts.into_par_iter().map(|v| v.into_iter().collect()).collect()
+    };
+    drop(lk);
+    // uid (with its two hashes) -> (person h64, person h2, person name)
+    let person_in = |lkm: &FxHashMap<u64, (u64, u64, u64, u32)>, u: B, uh: u64, u2: u64| -> (u64, u64, B) {
+        if !lk_clash {
+            return match lkm.get(&uh) {
+                Some(&(lu2, rh, r2, r)) if lu2 == u2 => (rh, r2, it.names[r as usize]),
+                _ => (uh, u2, u),
+            };
+        }
         match it.get(u, uh) {
             Some(i) => {
                 let r = rootv[i as usize] as usize;
-                (it.names[r], it.hashes[r])
+                (it.hashes[r], h2(it.names[r]), it.names[r])
             }
-            None => (u, uh),
+            None => (uh, u2, u),
         }
     };
     lap("links");
 
     // events: parse + validate each copy, scatter by event_id
     let ev_chunks = chunks(&ev_bufs);
-    let per_chunk: Vec<Vec<Vec<Ev>>> = ev_chunks
+    let per_chunk: Vec<Vec<Ev>> = ev_chunks
         .par_iter()
         .map(|&c| {
-            let mut sh: Vec<Vec<Ev>> = (0..NSH).map(|_| Vec::new()).collect();
+            let mut sh: Vec<Ev> = Vec::with_capacity(c.len() / 56 + 16);
             for l in lines(c) {
                 let Some([eid, uid, ts, ing, et, pid, price]) = fields::<7>(l) else { continue };
                 let Some(eid) = eid else { continue };
@@ -594,10 +737,16 @@ fn main() {
                     ok = false;
                 }
                 let eh = h64(eid);
-                sh[shard_h(eh)].push(Ev {
+                let (uh, uh2, uid) = match (ok, uid) {
+                    (true, Some(u)) => (h64(u), h2(u), u),
+                    _ => (0, 0, &b""[..]),
+                };
+                sh.push(Ev {
                     eh,
                     eid,
-                    uid: uid.unwrap_or(b""),
+                    uh,
+                    uh2,
+                    uid,
                     ing,
                     ts,
                     price: p,
@@ -609,14 +758,14 @@ fn main() {
             sh
         })
         .collect();
-    let ev_shards = transpose(per_chunk);
+    let (ev_all, ev_off) = partition(per_chunk, |e: &Ev| shard_h(e.eh));
     lap("events parsed");
 
     // dedup within each event shard, keep surviving events, re-scatter by person
-    let per_shard: Vec<Vec<Vec<PEv>>> = ev_shards
+    let per_shard: Vec<Vec<UEv>> = (0..NSH)
         .into_par_iter()
-        .map(|parts: Vec<Vec<Ev>>| {
-            let evs: Vec<&Ev> = parts.iter().flatten().collect(); // 8-byte refs, not 72-byte copies
+        .map(|shi| {
+            let evs = &ev_all[ev_off[shi]..ev_off[shi + 1]];
             let mut best: FxHashMap<u64, u32> = FxHashMap::default();
             best.reserve(evs.len());
             let mut slow: FxHashMap<B, u32> = FxHashMap::default(); // eids whose hash collides
@@ -646,28 +795,43 @@ fn main() {
                     }
                 }
             }
-            let mut sh: Vec<Vec<PEv>> = (0..NSH).map(|_| Vec::new()).collect();
+            let mut sh: Vec<UEv> = Vec::with_capacity(best.len());
             for &i in best.values().chain(slow.values()) {
-                let e = evs[i as usize];
+                let e = &evs[i as usize];
                 if !e.ok {
                     continue;
                 }
-                let (name, pk) = person(e.uid, h64(e.uid));
-                sh[shard_h(pk)].push(PEv { pk, name, ts: e.ts, price: e.price, cat: e.cat, purchase: e.purchase });
+                sh.push(UEv { uh: e.uh, uh2: e.uh2, uid: e.uid, ts: e.ts, price: e.price, cat: e.cat, purchase: e.purchase });
             }
             sh
         })
         .collect();
     lap("events deduped");
-    let pev_shards = scatter(per_shard);
+    drop(ev_all);
+    let (uev_all, uev_off) = partition(per_shard, |e: &UEv| shard_h(e.uh));
+    let resolved: Vec<Vec<PEv>> = (0..NSH)
+        .into_par_iter()
+        .map(|shi| {
+            let lkm = &lks[shi];
+            uev_all[uev_off[shi]..uev_off[shi + 1]]
+                .iter()
+                .map(|e| {
+                    let (pk, pk2, name) = person_in(lkm, e.uid, e.uh, e.uh2);
+                    PEv { pk, pk2, name, ts: e.ts, price: e.price, cat: e.cat, purchase: e.purchase }
+                })
+                .collect()
+        })
+        .collect();
+    drop(uev_all);
+    let (mut pev_all, pev_off) = partition(resolved, |e: &PEv| shard_h(e.pk));
     lap("events regrouped");
 
     // clicks: copies are identical, so duplicates cannot change credit or assists
     let cl_chunks = chunks(&cl_bufs);
-    let per_chunk: Vec<Vec<Vec<PCl>>> = cl_chunks
+    let per_chunk: Vec<Vec<UCl>> = cl_chunks
         .par_iter()
         .map(|&c| {
-            let mut sh: Vec<Vec<PCl>> = (0..NSH).map(|_| Vec::new()).collect();
+            let mut sh: Vec<UCl> = Vec::with_capacity(c.len() / 40 + 16);
             for l in lines(c) {
                 let Some([Some(cid), Some(uid), Some(camp), ts]) = fields::<4>(l) else { continue };
                 let Some(&camp) = campaigns.get(camp) else { continue };
@@ -675,13 +839,27 @@ fn main() {
                 if ts == BAD || ts < ws - WEEK || ts >= we {
                     continue;
                 }
-                let (name, pk) = person(uid, h64(uid));
-                sh[shard_h(pk)].push(PCl { pk, name, ts, cid, camp });
+                sh.push(UCl { uh: h64(uid), uh2: h2(uid), uid, ts, cid, camp });
             }
             sh
         })
         .collect();
-    let pcl_shards = scatter(per_chunk);
+    let (ucl_all, ucl_off) = partition(per_chunk, |c: &UCl| shard_h(c.uh));
+    let resolved: Vec<Vec<PCl>> = (0..NSH)
+        .into_par_iter()
+        .map(|shi| {
+            let lkm = &lks[shi];
+            ucl_all[ucl_off[shi]..ucl_off[shi + 1]]
+                .iter()
+                .map(|c| {
+                    let (pk, pk2, name) = person_in(lkm, c.uid, c.uh, c.uh2);
+                    PCl { pk, pk2, name, ts: c.ts, cid: c.cid, camp: c.camp }
+                })
+                .collect()
+        })
+        .collect();
+    drop(ucl_all);
+    let (mut pcl_all, pcl_off) = partition(resolved, |c: &PCl| shard_h(c.pk));
     lap("clicks parsed");
 
     // per person-shard: sessionize, attribute, aggregate
@@ -693,23 +871,25 @@ fn main() {
         revenue: i64,
         top: Option<u32>,
     }
-    let results: Vec<(Vec<URow>, FxHashMap<(u32, i32), [i64; 4]>)> = pev_shards
+    let pev_slices = shard_slices(&mut pev_all, &pev_off);
+    let pcl_slices = shard_slices(&mut pcl_all, &pcl_off);
+    let results: Vec<(Vec<URow>, FxHashMap<(u32, i32), [i64; 4]>)> = pev_slices
         .into_par_iter()
-        .zip(pcl_shards.into_par_iter())
-        .map(|(mut evs, mut cls)| {
+        .zip(pcl_slices.into_par_iter())
+        .map(|(evs, cls)| {
             // (pk, name) groups one person even if two names share a hash
             evs.sort_unstable_by_key(|e| (e.pk, e.ts));
             // a person hash shared by two different names would interleave them: detect and re-sort exactly
-            if evs.windows(2).any(|w| w[0].pk == w[1].pk && w[0].name != w[1].name) {
-                evs.sort_unstable_by(|a, b| a.pk.cmp(&b.pk).then_with(|| a.name.cmp(b.name)).then(a.ts.cmp(&b.ts)));
+            if evs.windows(2).any(|w| w[0].pk == w[1].pk && w[0].pk2 != w[1].pk2) {
+                evs.sort_unstable_by_key(|e| (e.pk, e.pk2, e.ts));
             }
             // by ts ascending, then click_id DESCENDING: the last eligible click is the winner
             cls.sort_unstable_by(|a, b| {
                 a.pk.cmp(&b.pk).then(a.ts.cmp(&b.ts)).then_with(|| b.cid.cmp(a.cid))
             });
-            if cls.windows(2).any(|w| w[0].pk == w[1].pk && w[0].name != w[1].name) {
+            if cls.windows(2).any(|w| w[0].pk == w[1].pk && w[0].pk2 != w[1].pk2) {
                 cls.sort_unstable_by(|a, b| {
-                    a.pk.cmp(&b.pk).then_with(|| a.name.cmp(b.name)).then(a.ts.cmp(&b.ts)).then_with(|| b.cid.cmp(a.cid))
+                    (a.pk, a.pk2, a.ts).cmp(&(b.pk, b.pk2, b.ts)).then_with(|| b.cid.cmp(a.cid))
                 });
             }
             let mut urows: Vec<URow> = vec![];
@@ -719,16 +899,16 @@ fn main() {
             let mut cats: Vec<(u32, i64)> = vec![];
             let mut active: FxHashMap<u32, u32> = FxHashMap::default();
             while i < evs.len() {
-                let (pk, name) = (evs[i].pk, evs[i].name);
+                let (pk, pk2, name) = (evs[i].pk, evs[i].pk2, evs[i].name);
                 let mut j = i;
-                while j < evs.len() && evs[j].pk == pk && evs[j].name == name {
+                while j < evs.len() && evs[j].pk == pk && evs[j].pk2 == pk2 {
                     j += 1;
                 }
-                while ci < cls.len() && (cls[ci].pk, cls[ci].name) < (pk, name) {
+                while ci < cls.len() && (cls[ci].pk, cls[ci].pk2) < (pk, pk2) {
                     ci += 1;
                 }
                 let mut cj = ci;
-                while cj < cls.len() && cls[cj].pk == pk && cls[cj].name == name {
+                while cj < cls.len() && cls[cj].pk == pk && cls[cj].pk2 == pk2 {
                     cj += 1;
                 }
                 let pcl = &cls[ci..cj];
