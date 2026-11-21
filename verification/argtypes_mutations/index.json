@@ -1,0 +1,72 @@
+[
+[
+"a00",
+"sqlglot/expressions/functions.py",
+"CurrentSchemas",
+"flip",
+"arg_types = {\"this\": True}"
+],
+[
+"a01",
+"sqlglot/expressions/temporal.py",
+"TimestampSub",
+"drop",
+"arg_types = {\"this\": True, \"expression\": True}"
+],
+[
+"a02",
+"sqlglot/expressions/string.py",
+"ConvertToCharset",
+"add",
+"arg_types = {\"this\": True, \"dest\": True, \"source\": False, \"extra_flag\": False}"
+],
+[
+"a03",
+"sqlglot/expressions/core.py",
+"ForIn",
+"reorder",
+"arg_types = {\"expression\": True, \"this\": True}"
+],
+[
+"a04",
+"sqlglot/expressions/properties.py",
+"DynamicProperty",
+"add",
+"arg_types = {\"extra_flag\": False}"
+],
+[
+"a05",
+"sqlglot/expressions/temporal.py",
+"DateFromParts",
+"drop",
+"arg_types = {\"year\": True, \"month\": False, \"day\": False}"
+],
+[
+"a06",
+"sqlglot/expressions/query.py",
+"Lock",
+"add",
+"arg_types = {\"update\": True, \"expressions\": False, \"wait\": False, \"key\": False, \"extra_flag\": False}"
+],
+[
+"a07",
+"sqlglot/expressions/temporal.py",
+"DateAdd",
+"reorder",
+"arg_types = {\"unit\": False, \"expression\": True, \"this\": True}"
+],
+[
+"a08",
+"sqlglot/expressions/array.py",
+"ArrayFirst",
+"flip",
+"arg_types = {\"this\": True, \"expression\": True}"
+],
+[
+"a09",
+"sqlglot/expressions/temporal.py",
+"GenerateDateArray",
+"drop",
+"arg_types = {\"start\": True, \"end\": True}"
+]
+]

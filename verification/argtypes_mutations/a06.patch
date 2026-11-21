@@ -1,0 +1,13 @@
+diff --git a/sqlglot/expressions/query.py b/sqlglot/expressions/query.py
+index 9f28e1c..1fe7820 100644
+--- a/sqlglot/expressions/query.py
++++ b/sqlglot/expressions/query.py
+@@ -1207,7 +1207,7 @@ class Schema(Expression):
+ 
+ 
+ class Lock(Expression):
+-    arg_types = {"update": True, "expressions": False, "wait": False, "key": False}
++    arg_types = {"update": True, "expressions": False, "wait": False, "key": False, "extra_flag": False}
+ 
+ 
+ class Select(Expression, Query):

@@ -1,0 +1,13 @@
+diff --git a/sqlglot/expressions/array.py b/sqlglot/expressions/array.py
+index a2e785c..a53233c 100644
+--- a/sqlglot/expressions/array.py
++++ b/sqlglot/expressions/array.py
+@@ -155,7 +155,7 @@ class ArrayDistinct(Expression, Func):
+ 
+ 
+ class ArrayFirst(Expression, Func):
+-    arg_types = {"this": True, "expression": False}
++    arg_types = {"this": True, "expression": True}
+ 
+ 
+ class ArrayLast(Expression, Func):

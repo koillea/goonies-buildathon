@@ -1,0 +1,13 @@
+diff --git a/sqlglot/expressions/temporal.py b/sqlglot/expressions/temporal.py
+index 7418c0e..da8196f 100644
+--- a/sqlglot/expressions/temporal.py
++++ b/sqlglot/expressions/temporal.py
+@@ -78,7 +78,7 @@ class AddMonths(Expression, Func):
+ 
+ 
+ class DateAdd(Expression, Func, IntervalOp):
+-    arg_types = {"this": True, "expression": True, "unit": False}
++    arg_types = {"unit": False, "expression": True, "this": True}
+ 
+ 
+ class DateBin(Expression, Func, IntervalOp):

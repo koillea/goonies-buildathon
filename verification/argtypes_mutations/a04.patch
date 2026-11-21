@@ -1,0 +1,13 @@
+diff --git a/sqlglot/expressions/properties.py b/sqlglot/expressions/properties.py
+index 4bc27f4..230ac73 100644
+--- a/sqlglot/expressions/properties.py
++++ b/sqlglot/expressions/properties.py
+@@ -269,7 +269,7 @@ class DictRange(Property):
+ 
+ 
+ class DynamicProperty(Property):
+-    arg_types = {}
++    arg_types = {"extra_flag": False}
+ 
+ 
+ class OnCluster(Property):

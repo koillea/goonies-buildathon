@@ -13,6 +13,8 @@ r = subprocess.run(["docker", "run", "--rm", "--network", "none", "--cpus", "1",
     "python", "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider", "-rfE", "--timeout=120", "--continue-on-collection-errors"],
     capture_output=True, text=True)
 log = r.stdout + r.stderr
+if not any(w in log for w in (" passed", " failed", " error")):
+    open(out + ".fail", "w").write("HARNESS_ERROR\n"); print(os.path.basename(out), "HARNESS_ERROR", log.strip()[-200:]); sys.exit(1)
 open(out + ".log", "w").write(log)
 summ = log.split("short test summary info", 1)[1] if "short test summary info" in log else ""
 ids = sorted(set(re.findall(r"(tests/\S+?\.py(?:::[^\s\[]+)*)", summ)))

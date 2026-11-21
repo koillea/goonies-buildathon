@@ -117,3 +117,27 @@ python3 -I verification/scripts/score_mut.py sel.jsonl
 | The sample gain comes from 3 of the 30 commits | The verbose log shows the swap rule firing on 3 sample commits (179.5 → 126.7 s) | measured |
 
 **Rules risk (human judgment needed):** `maps/cmp.json` is computed only from the pinned commit (a runtime probe evaluates both operators at every comparison while the pinned suite runs), not from any patch or answer. But it is keyed by *site + kind of edit* (an operator swap) and lists the tests where that edit could change behaviour. The rule bans "a table from a patch, **or from a kind of edit**, to the tests it breaks", while explicitly allowing "maps built from the pinned commit (coverage, imports, fixtures)". I read cmp.json as a value-sensitivity map, closer to coverage than to an answer table. It records where an edit *could* matter, not which tests *do* break. Still, it is the part of the entry a reviewer is most likely to question ("Top entries are read"). Consider confirming with the organizers before relying on it in the final.
+
+---
+
+## Addendum: `koillea/rwx-blast-radius-v1` @ `832535b` (v9, latest push; includes v8 `25c06f7`), stress-tested for expensive, slow tests
+| Claim / check | Evidence | Verdict |
+|---|---|---|
+| README: v9 119.652 s, 0 misses | Official `score.py`, 3 runs under scorer flags: **119.652 s, 0 misses**, byte-identical output | CONFIRMED |
+| README: v8 "same picks as v7, less CPU" | v9 makes the same selections as v7 on all 18 comparison-swap patches | consistent |
+| Board screenshot (208.3 s) | 206.153 simulated + 2.17 CPU = 208.323, which rounds to 208.3 per SCORING.md | arithmetic CONFIRMED |
+| v9 `arg_types` rule is sound | 10 **new** `arg_types` edits on random expression classes (flip required, drop key, add key, reorder keys; patches in `verification/argtypes_mutations/`). Full-suite ground truth: **0 misses**. 6 edits broke 2–15 tests; all were selected (2–45 of 1620 selected) | CONFIRMED on this sample |
+| Generic `cls.arg_types` readers (the possible hole) | Every variable-based reader in sqlglot either instantiates the class (`from_arg_list`) or reads through an instance, so the "tests that created C" set covers it. No test reads `arg_types` generically | CONFIRMED by code reading |
+| Old mutations | **p_default (170 missed) and p_lazy (82 missed) still miss**; the other 10 are fine | UNCHANGED gap |
+
+### Expensive / slow tests (all test durations multiplied by k; scored with the official `score.py`)
+| k | Full suite (serial) | Starter (run all, 3 workers) | v9 | v9 misses | Oracle | v9 / oracle |
+|---|---|---|---|---|---|---|
+| 1 | 103.0 s | 1210.5 | 119.7 | 0 | 94.4 | 1.27 |
+| 5 | 515.2 s | 5332.4 | 362.7 | 0 | 301.7 | 1.20 |
+| 10 | 1030.5 s | 10484.7 | 660.8 | 0 | 557.4 | 1.19 |
+| 30 | 3091.4 s | 31094.1 | 1850.2 | 0 | 1580.1 | 1.17 |
+
+- **Selection doesn't depend on durations**, and the worker split re-plans from `tests.json`, so v9 stays close to the oracle as tests get slower.
+- **The run-everything fallback stops paying off when tests are slow.** On 8 workers it costs 36.8 s per commit at ×1, 152 s at ×5, 296 s at ×10, and 584 s at ×20 (more than a 300 s miss). One test dominates: `test_parser.py::TestParser::test_max_nodes` is 28.8 s of the suite's 103 s. The README's reasoning ("a run-all (~37 s) is far cheaper than a miss (300 s)") holds only at the recorded durations, and the code has no cost check. v9 never falls back to run-everything on the sample. Suggestion: compute the run-all cost from `tests.json` and, above about 300 s, fall back to the file-level set instead of every test.
+- **Slow machine:** a 70-commit batch (sample + all my mutation sets) took 2.8 s wall at 2 CPUs, 4.2 s at 0.5 CPU and 9.0 s at 0.25 CPU, with about 2.1 s CPU. The limit is 180 s (270 s in the final), so headroom is large. The server charged 2.17 s CPU on practice.

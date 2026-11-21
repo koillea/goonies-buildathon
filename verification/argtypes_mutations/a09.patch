@@ -1,0 +1,13 @@
+diff --git a/sqlglot/expressions/temporal.py b/sqlglot/expressions/temporal.py
+index 7418c0e..206a2b8 100644
+--- a/sqlglot/expressions/temporal.py
++++ b/sqlglot/expressions/temporal.py
+@@ -328,7 +328,7 @@ class GapFill(Expression, Func):
+ 
+ 
+ class GenerateDateArray(Expression, Func):
+-    arg_types = {"start": True, "end": True, "step": False}
++    arg_types = {"start": True, "end": True}
+ 
+ 
+ class GenerateTimestampArray(Expression, Func):

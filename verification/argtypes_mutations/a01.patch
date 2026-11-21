@@ -1,0 +1,13 @@
+diff --git a/sqlglot/expressions/temporal.py b/sqlglot/expressions/temporal.py
+index 7418c0e..981232f 100644
+--- a/sqlglot/expressions/temporal.py
++++ b/sqlglot/expressions/temporal.py
+@@ -139,7 +139,7 @@ class TimestampDiff(Expression, Func, TimeUnit):
+ 
+ 
+ class TimestampSub(Expression, Func, TimeUnit):
+-    arg_types = {"this": True, "expression": True, "unit": False}
++    arg_types = {"this": True, "expression": True}
+ 
+ 
+ class TsOrDsAdd(Expression, Func, TimeUnit):

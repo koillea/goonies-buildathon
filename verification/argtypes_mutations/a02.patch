@@ -1,0 +1,13 @@
+diff --git a/sqlglot/expressions/string.py b/sqlglot/expressions/string.py
+index b5e1e20..a55cfc2 100644
+--- a/sqlglot/expressions/string.py
++++ b/sqlglot/expressions/string.py
+@@ -290,7 +290,7 @@ class CodePointsToString(Expression, Func):
+ 
+ 
+ class ConvertToCharset(Expression, Func):
+-    arg_types = {"this": True, "dest": True, "source": False}
++    arg_types = {"this": True, "dest": True, "source": False, "extra_flag": False}
+ 
+ 
+ class Decode(Expression, Func):
