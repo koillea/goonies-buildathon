@@ -1,0 +1,12 @@
+diff --git a/sqlglot/generators/tsql.py b/sqlglot/generators/tsql.py
+index b905a0b..ae9a2f9 100644
+--- a/sqlglot/generators/tsql.py
++++ b/sqlglot/generators/tsql.py
+@@ -412,6 +412,7 @@ class TSQLGenerator(generator.Generator):
+ 
+     def splitpart_sql(self, expression: exp.SplitPart) -> str:
+         this = expression.this
++        # count parts
+         split_count = len(this.name.split("."))
+         delimiter = expression.args.get("delimiter")
+         part_index = expression.args.get("part_index")

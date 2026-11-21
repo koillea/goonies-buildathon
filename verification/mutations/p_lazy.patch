@@ -1,0 +1,12 @@
+diff --git a/sqlglot/__init__.py b/sqlglot/__init__.py
+index 2039e77..7ac2f7a 100644
+--- a/sqlglot/__init__.py
++++ b/sqlglot/__init__.py
+@@ -16,6 +16,7 @@ import typing as t
+ from sqlglot import expressions as exp
+ from sqlglot.dialects.dialect import Dialect as Dialect, Dialects as Dialects
+ from sqlglot.diff import diff as diff
++import sqlglot.dialects.duckdb  # noqa: F401
+ from sqlglot.errors import (
+     ErrorLevel as ErrorLevel,
+     ParseError as ParseError,

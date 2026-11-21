@@ -1,0 +1,13 @@
+diff --git a/sqlglot/generators/tsql.py b/sqlglot/generators/tsql.py
+index b905a0b..7be1dbe 100644
+--- a/sqlglot/generators/tsql.py
++++ b/sqlglot/generators/tsql.py
+@@ -410,7 +410,7 @@ class TSQLGenerator(generator.Generator):
+         self.unsupported("LATERAL clause is not supported.")
+         return "LATERAL"
+ 
+-    def splitpart_sql(self, expression: exp.SplitPart) -> str:
++    def splitpart_sql(self, expression: exp.SplitPart, _x=UNDEFINED_NAME) -> str:
+         this = expression.this
+         split_count = len(this.name.split("."))
+         delimiter = expression.args.get("delimiter")

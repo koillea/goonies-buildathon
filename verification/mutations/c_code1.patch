@@ -1,0 +1,13 @@
+diff --git a/sqlglot/generators/tsql.py b/sqlglot/generators/tsql.py
+index b905a0b..0e54670 100644
+--- a/sqlglot/generators/tsql.py
++++ b/sqlglot/generators/tsql.py
+@@ -420,7 +420,7 @@ class TSQLGenerator(generator.Generator):
+             not all(isinstance(arg, exp.Literal) for arg in (this, delimiter, part_index))
+             or (delimiter and delimiter.name != ".")
+             or not part_index
+-            or split_count > 4
++            or split_count > 3
+         ):
+             self.unsupported(
+                 "SPLIT_PART can be transpiled to PARSENAME only for '.' delimiter and literal values"

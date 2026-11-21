@@ -1,0 +1,13 @@
+diff --git a/sqlglot/dialects/tsql.py b/sqlglot/dialects/tsql.py
+index 4daed29..9c8f81a 100644
+--- a/sqlglot/dialects/tsql.py
++++ b/sqlglot/dialects/tsql.py
+@@ -166,7 +166,7 @@ class TSQL(Dialect):
+         KEYWORDS = {
+             **tokens.Tokenizer.KEYWORDS,
+             "CLUSTERED INDEX": TokenType.INDEX,
+-            "DATETIME2": TokenType.DATETIME2,
++            "DATETIME2": TokenType.DATETIME,
+             "DATETIMEOFFSET": TokenType.TIMESTAMPTZ,
+             "DECLARE": TokenType.DECLARE,
+             "EXEC": TokenType.EXECUTE,

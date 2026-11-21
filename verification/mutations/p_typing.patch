@@ -1,0 +1,12 @@
+diff --git a/sqlglot/typing/duckdb.py b/sqlglot/typing/duckdb.py
+index 46fb61b..14b743a 100644
+--- a/sqlglot/typing/duckdb.py
++++ b/sqlglot/typing/duckdb.py
+@@ -70,6 +70,7 @@ def _annotate_add_sub(self: TypeAnnotator, expression: exp.Add | exp.Sub) -> exp
+ 
+ EXPRESSION_METADATA = {
+     **EXPRESSION_METADATA,
++    exp.Floor: dict(EXPRESSION_METADATA[exp.Floor]),
+     **{
+         expr_type: {"returns": exp.DType.BIGINT}
+         for expr_type in {
