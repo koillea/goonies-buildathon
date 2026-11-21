@@ -33,6 +33,34 @@ fn h64(b: &[u8]) -> u64 {
     h64s(b, 0x9E37_79B9_7F4A_7C15)
 }
 
+/// Both hashes in one pass over the bytes: (h64(b), h2(b)).
+#[inline]
+fn h12(b: &[u8]) -> (u64, u64) {
+    let len = (b.len() as u64).wrapping_mul(0xA076_1D64_78BD_642F);
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15 ^ len;
+    let mut y: u64 = 0xD6E8_FEB8_6659_FD93 ^ len;
+    let mut i = 0;
+    while i + 8 <= b.len() {
+        let w = u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        x = (x ^ w).wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        x ^= x >> 32;
+        y = (y ^ w).wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        y ^= y >> 32;
+        i += 8;
+    }
+    let mut t = 0u64;
+    for (k, &c) in b[i..].iter().enumerate() {
+        t |= (c as u64) << (8 * k);
+    }
+    let fin = |mut h: u64| {
+        h = (h ^ t).wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+        h ^= h >> 29;
+        h = h.wrapping_mul(0x94D0_49BB_1331_11EB);
+        h ^ (h >> 32)
+    };
+    (fin(x), fin(y))
+}
+
 /// Independent second hash: (h64, h2) together identify a string (2^-128 collision odds).
 #[inline]
 fn h2(b: &[u8]) -> u64 {
@@ -371,18 +399,11 @@ fn small_table(path: &Path) -> Vec<(B, B)> {
 
 // ------------------------------------------------------------------ records
 #[derive(Clone, Copy)]
-struct Ev {
-    eh: u64, // h64(event_id)
-    eid: B,
-    uh: u64, // (h64, h2) of user_id, hashed at parse time while the line is in cache
-    uh2: u64,
-    uid: B,
+struct DKey {
+    eh: u64, // (h64, h2) of event_id: 128-bit identity for dedup
+    eh2: u64,
     ing: i64,
-    ts: i64,
-    price: i32,
-    cat: u32, // category of a purchase (UNKNOWN_CAT if not in products.csv)
-    ok: bool,
-    purchase: bool,
+    loc: u64, // chunk << 32 | index of the valid payload in that chunk (u32::MAX if the copy is invalid)
 }
 
 #[derive(Clone, Copy)]
@@ -425,6 +446,19 @@ struct PCl {
     ts: i64,
     cid: B,
     camp: u32,
+}
+
+/// Sort records by (pk, ts) through packed 128-bit keys (pk | ts-base | index): one integer
+/// compare per step and 16-byte moves, then a single gather into order.
+fn sort_by_pk_ts<T: Copy>(v: &mut [T], base: i64, pk: impl Fn(&T) -> u64, ts: impl Fn(&T) -> i64) {
+    let mut k: Vec<u128> = v
+        .iter()
+        .enumerate()
+        .map(|(i, x)| ((pk(x) as u128) << 64) | (((ts(x) - base) as u32 as u128) << 32) | i as u128)
+        .collect();
+    k.sort_unstable();
+    let tmp: Vec<T> = k.iter().map(|&x| v[x as u32 as usize]).collect();
+    v.copy_from_slice(&tmp);
 }
 
 struct SendPtr<T>(*mut T);
@@ -541,6 +575,9 @@ fn main() {
         ts
     };
     let (ws, we) = (grab("\"window_start\""), grab("\"window_end\""));
+    for t in [&b""[..], b"a", b"u1", b"e42huhoug", b"0123456789abcdefXYZ"] {
+        assert_eq!(h12(t), (h64(t), h2(t)), "hash self-check");
+    }
 
     // read everything in parallel
     let (ev_files, cl_files, ln_files) =
@@ -706,10 +743,13 @@ fn main() {
 
     // events: parse + validate each copy, scatter by event_id
     let ev_chunks = chunks(&ev_bufs);
-    let per_chunk: Vec<Vec<Ev>> = ev_chunks
+    let per_chunk: Vec<(Vec<UEv>, Vec<DKey>)> = ev_chunks
         .par_iter()
-        .map(|&c| {
-            let mut sh: Vec<Ev> = Vec::with_capacity(c.len() / 56 + 16);
+        .enumerate()
+        .map(|(ci, &c)| {
+            let cap = c.len() / 64 + 16;
+            let mut pay: Vec<UEv> = Vec::with_capacity(cap);
+            let mut keys: Vec<DKey> = Vec::with_capacity(cap);
             for l in lines(c) {
                 let Some([eid, uid, ts, ing, et, pid, price]) = fields::<7>(l) else { continue };
                 let Some(eid) = eid else { continue };
@@ -736,78 +776,63 @@ fn main() {
                 if ok && ing - ts > DAY {
                     ok = false;
                 }
-                let eh = h64(eid);
-                let (uh, uh2, uid) = match (ok, uid) {
-                    (true, Some(u)) => (h64(u), h2(u), u),
-                    _ => (0, 0, &b""[..]),
-                };
-                sh.push(Ev {
-                    eh,
-                    eid,
-                    uh,
-                    uh2,
-                    uid,
-                    ing,
-                    ts,
-                    price: p,
-                    cat,
-                    ok,
-                    purchase: kind == 2,
-                });
+                let mut idx = u32::MAX as u64;
+                if ok {
+                    let u = uid.unwrap();
+                    idx = pay.len() as u64;
+                    let (uh, uh2) = h12(u);
+                    pay.push(UEv { uh, uh2, uid: u, ts, price: p, cat, purchase: kind == 2 });
+                }
+                let (eh, eh2) = h12(eid);
+                keys.push(DKey { eh, eh2, ing, loc: ((ci as u64) << 32) | idx });
             }
-            sh
+            (pay, keys)
         })
         .collect();
-    let (ev_all, ev_off) = partition(per_chunk, |e: &Ev| shard_h(e.eh));
+    let (pays, keys): (Vec<Vec<UEv>>, Vec<Vec<DKey>>) = per_chunk.into_iter().unzip();
+    let (key_all, key_off) = partition(keys, |k: &DKey| shard_h(k.eh));
     lap("events parsed");
 
     // dedup within each event shard, keep surviving events, re-scatter by person
-    let per_shard: Vec<Vec<UEv>> = (0..NSH)
-        .into_par_iter()
-        .map(|shi| {
-            let evs = &ev_all[ev_off[shi]..ev_off[shi + 1]];
-            let mut best: FxHashMap<u64, u32> = FxHashMap::default();
-            best.reserve(evs.len());
-            let mut slow: FxHashMap<B, u32> = FxHashMap::default(); // eids whose hash collides
-            for (i, e) in evs.iter().enumerate() {
-                let i = i as u32;
-                if !slow.is_empty() {
-                    if let Some(j) = slow.get_mut(e.eid) {
-                        if e.ing < evs[*j as usize].ing {
-                            *j = i;
-                        }
-                        continue;
+    // winner bitmaps, one per chunk, over that chunk's valid payloads
+    let bits: Vec<Vec<std::sync::atomic::AtomicU64>> =
+        pays.iter().map(|v| (0..v.len() / 64 + 1).map(|_| std::sync::atomic::AtomicU64::new(0)).collect()).collect();
+    (0..NSH).into_par_iter().for_each(|shi| {
+        let ks = &key_all[key_off[shi]..key_off[shi + 1]];
+        // earliest ingest per event (identical ingest => identical copies, either is fine)
+        let mut best: FxHashMap<(u64, u64), u32> = FxHashMap::default();
+        best.reserve(ks.len());
+        for (i, k) in ks.iter().enumerate() {
+            best.entry((k.eh, k.eh2))
+                .and_modify(|j| {
+                    if k.ing < ks[*j as usize].ing {
+                        *j = i as u32
                     }
-                }
-                match best.entry(e.eh) {
-                    std::collections::hash_map::Entry::Vacant(v) => {
-                        v.insert(i);
-                    }
-                    std::collections::hash_map::Entry::Occupied(mut o) => {
-                        let j = *o.get() as usize;
-                        if evs[j].eid == e.eid {
-                            if e.ing < evs[j].ing {
-                                o.insert(i);
-                            }
-                        } else {
-                            slow.insert(e.eid, i); // different event, same hash
-                        }
-                    }
-                }
+                })
+                .or_insert(i as u32);
+        }
+        for &i in best.values() {
+            let loc = ks[i as usize].loc;
+            let idx = (loc & 0xFFFF_FFFF) as usize;
+            if idx != u32::MAX as usize {
+                bits[(loc >> 32) as usize][idx / 64].fetch_or(1 << (idx % 64), std::sync::atomic::Ordering::Relaxed);
             }
-            let mut sh: Vec<UEv> = Vec::with_capacity(best.len());
-            for &i in best.values().chain(slow.values()) {
-                let e = &evs[i as usize];
-                if !e.ok {
-                    continue;
-                }
-                sh.push(UEv { uh: e.uh, uh2: e.uh2, uid: e.uid, ts: e.ts, price: e.price, cat: e.cat, purchase: e.purchase });
-            }
-            sh
+        }
+    });
+    drop(key_all);
+    let per_shard: Vec<Vec<UEv>> = pays
+        .par_iter()
+        .zip(bits.par_iter())
+        .map(|(v, b)| {
+            v.iter()
+                .enumerate()
+                .filter(|(i, _)| b[i / 64].load(std::sync::atomic::Ordering::Relaxed) >> (i % 64) & 1 == 1)
+                .map(|(_, e)| *e)
+                .collect()
         })
         .collect();
     lap("events deduped");
-    drop(ev_all);
+    drop(pays);
     let (uev_all, uev_off) = partition(per_shard, |e: &UEv| shard_h(e.uh));
     let resolved: Vec<Vec<PEv>> = (0..NSH)
         .into_par_iter()
@@ -839,7 +864,8 @@ fn main() {
                 if ts == BAD || ts < ws - WEEK || ts >= we {
                     continue;
                 }
-                sh.push(UCl { uh: h64(uid), uh2: h2(uid), uid, ts, cid, camp });
+                let (uh, uh2) = h12(uid);
+                sh.push(UCl { uh, uh2, uid, ts, cid, camp });
             }
             sh
         })
@@ -878,15 +904,27 @@ fn main() {
         .zip(pcl_slices.into_par_iter())
         .map(|(evs, cls)| {
             // (pk, name) groups one person even if two names share a hash
-            evs.sort_unstable_by_key(|e| (e.pk, e.ts));
+            // valid events lie in [ws, we): ts - ws fits in 32 bits
+            sort_by_pk_ts(evs, ws, |e| e.pk, |e| e.ts);
             // a person hash shared by two different names would interleave them: detect and re-sort exactly
             if evs.windows(2).any(|w| w[0].pk == w[1].pk && w[0].pk2 != w[1].pk2) {
                 evs.sort_unstable_by_key(|e| (e.pk, e.pk2, e.ts));
             }
             // by ts ascending, then click_id DESCENDING: the last eligible click is the winner
-            cls.sort_unstable_by(|a, b| {
-                a.pk.cmp(&b.pk).then(a.ts.cmp(&b.ts)).then_with(|| b.cid.cmp(a.cid))
-            });
+            // valid clicks lie in [ws - 7d, we): ts - base fits in 32 bits
+            sort_by_pk_ts(cls, ws - WEEK, |c| c.pk, |c| c.ts);
+            // equal (pk, ts) runs are rare: order them by click_id descending (exact tie rule)
+            let mut a = 0;
+            while a < cls.len() {
+                let mut b = a + 1;
+                while b < cls.len() && cls[b].pk == cls[a].pk && cls[b].ts == cls[a].ts {
+                    b += 1;
+                }
+                if b - a > 1 {
+                    cls[a..b].sort_unstable_by(|x, y| y.cid.cmp(x.cid));
+                }
+                a = b;
+            }
             if cls.windows(2).any(|w| w[0].pk == w[1].pk && w[0].pk2 != w[1].pk2) {
                 cls.sort_unstable_by(|a, b| {
                     (a.pk, a.pk2, a.ts).cmp(&(b.pk, b.pk2, b.ts)).then_with(|| b.cid.cmp(a.cid))
